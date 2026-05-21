@@ -166,7 +166,9 @@ assert(botSource.includes('ORION_THREAD_REPLIES_ENABLED'), 'Orion thread reply e
 assert(botSource.includes("client.on('messageCreate'"), 'Orion thread message handler missing');
 assert(botSource.includes('resolveGoalForInteraction'), 'goal thread inference helper missing');
 assert(botSource.includes('classifyGoalThreadMessage'), 'goal thread message classifier missing');
+assert(botSource.includes('greetingReply'), 'goal thread greeting response missing');
 assert(botSource.includes('answerGoalThreadQuestion'), 'goal thread question answer path missing');
+assert(botSource.includes('hasSuccessfulImplementationJob'), 'agent approval guard missing');
 assert(botSource.includes('goalActionRows'), 'goal action buttons missing');
 assert(botSource.includes('goal:approve-run'), 'Approve + Run button missing');
 assert(botSource.includes("'execute-after-approval'"), 'execute-after-approval mode should be supported');

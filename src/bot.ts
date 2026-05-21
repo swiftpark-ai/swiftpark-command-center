@@ -135,7 +135,7 @@ type GoalProgressReporter = (
   detail?: string
 ) => Promise<void>;
 
-type GoalThreadMessageIntent = 'ignore' | 'question' | 'approval-intent' | 'revision';
+type GoalThreadMessageIntent = 'ignore' | 'greeting' | 'question' | 'approval-intent' | 'revision';
 
 type OrionPlanningResult = {
   plan: string;
@@ -1959,8 +1959,15 @@ async function resolveGoalForInteraction(
 
 function defaultApprovalTargetForGoal(goal: GoalState): string {
   if (goal.status === 'ready-for-qa-approval') return goal.qaApprovalToken;
-  if (goal.status === 'plan-approved' || goal.status === 'agent-approved') return goal.agentApprovalToken;
+  if (!goal.approvals.plan || goal.status === 'waiting-for-plan-approval' || goal.status === 'plan-revised') return goal.planApprovalToken;
+  if (!goal.approvals.agent && hasSuccessfulImplementationJob(goal)) return goal.agentApprovalToken;
   return goal.planApprovalToken;
+}
+
+function hasSuccessfulImplementationJob(goal: GoalState): boolean {
+  return goal.jobs.some((job) =>
+    (job.agent === 'iris' || job.agent === 'atlas') && job.status === 'succeeded'
+  );
 }
 
 async function resolveApprovalTargetForInteraction(interaction: any, rawTarget?: string | null): Promise<string | undefined> {
@@ -2046,7 +2053,11 @@ function classifyGoalThreadMessage(content: string): GoalThreadMessageIntent {
   const normalized = content.trim().toLowerCase();
   if (!normalized) return 'ignore';
 
-  if (/^(hi+|hello|hey|yo|thanks|thank you|ok|okay|cool|nice|lol|lmao|got it|sounds good)[.!? ]*$/i.test(normalized)) {
+  if (/^(hi+|hello|hey|yo)[.!? ]*$/i.test(normalized)) {
+    return 'greeting';
+  }
+
+  if (/^(thanks|thank you|ok|okay|cool|nice|lol|lmao|got it|sounds good)[.!? ]*$/i.test(normalized)) {
     return 'ignore';
   }
 
@@ -2115,6 +2126,16 @@ function approvalIntentReply(goal: GoalState): string {
     `I read that as approval intent for goal-${goal.id}.`,
     '',
     'Use **Approve + Run** to let Orion start the recommended agents, or **Plan Only** if you only want to accept the plan without running agents.',
+  ].join('\n');
+}
+
+function greetingReply(goal: GoalState): string {
+  return [
+    `I'm here on goal-${goal.id}.`,
+    `Status: \`${goal.status}\``,
+    `Next: ${goal.nextAction || defaultNextAction(goal)}`,
+    '',
+    'Ask me a question, tell me what to change, or use the buttons below.',
   ].join('\n');
 }
 
@@ -3517,17 +3538,18 @@ async function formatGoalStatus(goal: GoalState): Promise<string> {
   const runningJob = goal.jobs.find((job) => job.status === 'running');
   const elapsed = goal.startedAt ? formatMs(elapsedMs(goal.startedAt, goal.endedAt)) : formatElapsed(goal.createdAt, goal.endedAt);
   const stale = goal.status === 'planning' && elapsedMs(goal.startedAt || goal.updatedAt) > orionStaleAfterMs;
+  const agentApprovalWithoutWork = goal.status === 'agent-approved' && !hasSuccessfulImplementationJob(goal);
 
   return [
     `## Goal Status: goal-${goal.id}`,
-    `Status: ${goal.status}${stale ? ' (stale; needs attention)' : ''}`,
+    `Status: ${goal.status}${stale ? ' (stale; needs attention)' : ''}${agentApprovalWithoutWork ? ' (agent approval recorded before Iris/Atlas work)' : ''}`,
     `Current step: ${goal.currentStep || '(unknown)'}`,
     `Agent: ${goal.currentAgent || runningJob?.agent || 'none'}`,
     `Elapsed: ${elapsed}`,
     `Worktree: \`${goal.worktreePath}\``,
     `Plan file exists: ${planExists ? 'yes' : 'no'}`,
     `Last error: ${goal.lastError ? truncate(goal.lastError, 700) : 'none'}`,
-    `Next action: ${goal.nextAction || defaultNextAction(goal)}`,
+    `Next action: ${agentApprovalWithoutWork ? 'Use Approve + Run, Run Iris/Atlas, or revise the plan before QA.' : goal.nextAction || defaultNextAction(goal)}`,
   ].join('\n');
 }
 
@@ -4172,6 +4194,14 @@ client.on('messageCreate', async (message: any) => {
 
   try {
     const setup = await ensureChannels(message.guild);
+    if (intent === 'greeting') {
+      await message.reply({
+        content: greetingReply(goal),
+        components: goalActionRows(goal),
+      }).catch(() => undefined);
+      return;
+    }
+
     if (intent === 'question') {
       await message.reply(await answerGoalThreadQuestion(goal, content)).catch(() => undefined);
       return;
@@ -4980,6 +5010,17 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       }
 
       const approvalType = lowerTarget.startsWith('qa-') ? 'qa' : 'agent';
+      if (approvalType === 'agent' && !hasSuccessfulImplementationJob(goal)) {
+        await interaction.editReply(
+          [
+            `No Iris or Atlas implementation work has completed for goal-${goal.id} yet.`,
+            'Agent approval is only for approving completed implementation work.',
+            `Use **Approve + Run** or \`/run-agent\` when you want Orion to start work.`,
+          ].join('\n')
+        );
+        return;
+      }
+
       const updated = await updateGoalState(goal.id, (current) => {
         current.status = approvalType === 'qa' ? 'qa-approved' : 'agent-approved';
         current.currentStep = approvalType === 'qa' ? 'QA approved' : 'Agent work approved';
