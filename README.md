@@ -42,7 +42,7 @@ Discord command center bot for local SwiftPark agent workflows.
 - Sentinel: QA / Visual Testing Agent, powered by Playwright + bot scripts.
 - Scout: Research / YC / Reddit / Client Intel Agent, stubbed for now.
 - Echo: Discord Comms / Status Reporter, powered by the bot.
-- Pulse: Personal Check-in Agent, disabled until reminders/OpenClaw are added.
+- Pulse: Personal Check-in Agent for opt-in founder briefs, goal nudges, and gym check-ins.
 
 Neo is reserved for the future SwiftPark user-facing assistant. Do not use Neo as the PM name.
 
@@ -93,6 +93,8 @@ During planning, `/goal` updates visible progress:
 - Orion plan complete, or fallback plan generated
 - posting the plan
 - waiting for approval
+
+For SwiftPark Phase 7/mobile-web goals, Orion automatically includes `context/SWIFTPARK_PHASE7_CONTEXT.md` when that file is present and the goal mentions Phase 7, mobile web, Brighton, OSU, Google Maps, Neo, operator dashboard, or the pilot loop.
 
 Timeouts are configurable per agent:
 
@@ -188,6 +190,24 @@ Opt into completion and approval-needed notifications:
 ```
 
 Notifications mention opted-in users only. The bot does not use `@everyone` or `@here`.
+
+## Pulse
+
+Pulse is opt-in and posts in `#pulse-checkins`. It does not read normal chat messages.
+
+```text
+/pulse setting:on
+/pulse setting:status
+/pulse setting:gym-on
+/pulse setting:gym-off
+/pulse-checkin gym:yes
+/pulse-checkin gym:not-yet
+/daily-brief
+```
+
+When Pulse gym check-ins are on, it asks at `PULSE_GYM_PROMPT_HOUR:PULSE_GYM_PROMPT_MINUTE` in `PULSE_TIME_ZONE` whether you went to the gym. The default is noon in `America/Los_Angeles`. Pressing **Yes** or running `/pulse-checkin gym:yes` logs the day and returns `🍪`.
+
+Pulse stores local state in `runs/pulse-state.json`, which is ignored by git.
 
 ## Approvals
 

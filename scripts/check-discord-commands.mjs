@@ -28,6 +28,9 @@ const expectedCommands = [
   'approve',
   'reject',
   'notify',
+  'pulse',
+  'pulse-checkin',
+  'daily-brief',
   'log-change',
   'decision',
 ];

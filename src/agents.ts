@@ -63,8 +63,8 @@ export const agentDefinitions: AgentDefinition[] = [
   {
     id: 'pulse',
     displayName: 'Pulse',
-    role: 'Personal Check-ins',
-    tool: 'Discord reminders / future OpenClaw',
+    role: 'Personal Check-ins / Founder Briefs',
+    tool: 'Discord opt-in check-ins',
     defaultStatus: 'disabled',
     outputChannelId: 'personal-checkins',
   },

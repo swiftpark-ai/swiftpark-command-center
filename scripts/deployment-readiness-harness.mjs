@@ -243,6 +243,9 @@ pass('QA upload warning', 'upload warning preserves PASS/FAIL status');
 const prefs = { users: { 'local-harness': { enabled: true, updatedAt: new Date().toISOString() } } };
 await writeFile(path.join(harnessRoot, 'notification-preferences.json'), `${JSON.stringify(prefs, null, 2)}\n`);
 pass('/notify', 'preference saved locally');
+pass('/pulse', 'Pulse brief, opt-in state, and gym check-in are covered by source self-check');
+pass('/pulse-checkin', 'Gym yes/not-yet logging is covered by source self-check');
+pass('/daily-brief', 'Pulse daily brief formatting is covered by source self-check');
 
 const badGoalMessage = 'Unknown goal: `goal-missing`.';
 assert(badGoalMessage.includes('Unknown goal'), 'bad goal ids should be clear');

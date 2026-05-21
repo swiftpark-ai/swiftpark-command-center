@@ -1,5 +1,8 @@
 import 'dotenv/config';
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   GatewayIntentBits,
@@ -69,6 +72,11 @@ const jiraEnabled = envFlag('JIRA_ENABLED');
 const manualLogPath = path.join(runsDir, 'manual-log.md');
 const commandCenterCategoryName = 'Stress Less';
 const logicalChannelNames = new Map(channelDefinitions.map((channel) => [channel.id, channel.displayName]));
+const phase7ContextPath = path.join(commandCenterRoot, 'context', 'SWIFTPARK_PHASE7_CONTEXT.md');
+const pulseStatePath = path.join(runsDir, 'pulse-state.json');
+const pulseTimeZone = process.env.PULSE_TIME_ZONE || 'America/Los_Angeles';
+const pulseGymPromptHour = Math.min(Math.max(Number(process.env.PULSE_GYM_PROMPT_HOUR || 12), 0), 23);
+const pulseGymPromptMinute = Math.min(Math.max(Number(process.env.PULSE_GYM_PROMPT_MINUTE || 0), 0), 59);
 
 type QaMode = 'smoke' | 'screen' | 'full';
 type GoalMode = 'plan-only' | 'execute-after-approval';
@@ -231,6 +239,23 @@ type NotificationPreferences = {
   }>;
 };
 
+type PulsePreference = {
+  enabled: boolean;
+  gymCheckIn: boolean;
+  updatedAt: string;
+};
+
+type PulseGymLog = {
+  status: 'yes' | 'not-yet';
+  updatedAt: string;
+};
+
+type PulseState = {
+  users: Record<string, PulsePreference>;
+  gym: Record<string, Record<string, PulseGymLog>>;
+  lastGymPromptDate?: string;
+};
+
 type StoredMessageRef = {
   channelId: string;
   messageId: string;
@@ -373,6 +398,25 @@ function formatMs(ms: number): string {
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
   return `${seconds}s`;
+}
+
+function localDateParts(date = new Date()): { date: string; hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: pulseTimeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || '00';
+
+  return {
+    date: `${value('year')}-${value('month')}-${value('day')}`,
+    hour: Number(value('hour')),
+    minute: Number(value('minute')),
+  };
 }
 
 function hardTimeoutLabel(timeoutMs: number): string {
@@ -1035,6 +1079,43 @@ async function registerCommands() {
       ),
 
     new SlashCommandBuilder()
+      .setName('pulse')
+      .setDescription('Manage Pulse check-ins and show a founder brief')
+      .addStringOption((option) =>
+        option
+          .setName('setting')
+          .setDescription('Pulse action')
+          .setRequired(false)
+          .addChoices(
+            { name: 'brief', value: 'brief' },
+            { name: 'status', value: 'status' },
+            { name: 'on', value: 'on' },
+            { name: 'off', value: 'off' },
+            { name: 'gym-on', value: 'gym-on' },
+            { name: 'gym-off', value: 'gym-off' }
+          )
+      ),
+
+    new SlashCommandBuilder()
+      .setName('pulse-checkin')
+      .setDescription('Log a Pulse personal check-in')
+      .addStringOption((option) =>
+        option
+          .setName('gym')
+          .setDescription('Gym check-in for today')
+          .setRequired(false)
+          .addChoices(
+            { name: 'yes', value: 'yes' },
+            { name: 'not-yet', value: 'not-yet' },
+            { name: 'status', value: 'status' }
+          )
+      ),
+
+    new SlashCommandBuilder()
+      .setName('daily-brief')
+      .setDescription('Show the Pulse daily command-center brief'),
+
+    new SlashCommandBuilder()
       .setName('log-change')
       .setDescription('Record a Discord-first manual change note')
       .addStringOption((option) =>
@@ -1334,6 +1415,185 @@ async function setNotificationPreference(userId: string, enabled: boolean): Prom
 async function notificationStatus(userId: string): Promise<boolean> {
   const preferences = await readNotificationPreferences();
   return Boolean(preferences.users[userId]?.enabled);
+}
+
+async function readPulseState(): Promise<PulseState> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(pulseStatePath, 'utf8')) as Partial<PulseState>;
+    return {
+      users: parsed.users || {},
+      gym: parsed.gym || {},
+      lastGymPromptDate: parsed.lastGymPromptDate,
+    };
+  } catch {
+    return { users: {}, gym: {} };
+  }
+}
+
+async function writePulseState(state: PulseState): Promise<void> {
+  await fs.mkdir(runsDir, { recursive: true });
+  await fs.writeFile(pulseStatePath, JSON.stringify(state, null, 2) + '\n');
+}
+
+async function setPulsePreference(
+  userId: string,
+  patch: Partial<Pick<PulsePreference, 'enabled' | 'gymCheckIn'>>
+): Promise<PulsePreference> {
+  const state = await readPulseState();
+  const current = state.users[userId] || { enabled: false, gymCheckIn: false, updatedAt: new Date().toISOString() };
+  const updated = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+
+  state.users[userId] = updated;
+  await writePulseState(state);
+  await refreshPulseAgentStatus(state).catch(() => undefined);
+  return updated;
+}
+
+async function refreshPulseAgentStatus(state?: PulseState): Promise<void> {
+  state ||= await readPulseState();
+  const enabledCount = Object.values(state.users).filter((user) => user.enabled).length;
+  const gymCount = Object.values(state.users).filter((user) => user.enabled && user.gymCheckIn).length;
+
+  await updateAgent('pulse', {
+    status: enabledCount > 0 ? 'online' : 'disabled',
+    currentTask: enabledCount > 0
+      ? `Pulse enabled for ${enabledCount} user(s); gym check-ins for ${gymCount}.`
+      : '',
+    currentStep: enabledCount > 0 ? 'Standing by for /pulse, /daily-brief, and noon gym check-ins.' : undefined,
+    lastOutputSummary: enabledCount > 0
+      ? `Pulse is opt-in. Gym prompt: ${String(pulseGymPromptHour).padStart(2, '0')}:${String(pulseGymPromptMinute).padStart(2, '0')} ${pulseTimeZone}.`
+      : undefined,
+  });
+}
+
+async function recordPulseGymCheckin(userId: string, status: 'yes' | 'not-yet', date = localDateParts().date): Promise<string> {
+  const state = await readPulseState();
+  state.gym[date] ||= {};
+  state.gym[date][userId] = {
+    status,
+    updatedAt: new Date().toISOString(),
+  };
+  await writePulseState(state);
+  await refreshPulseAgentStatus(state).catch(() => undefined);
+
+  return status === 'yes'
+    ? `Gym logged for ${date}. Cookie earned: 🍪`
+    : `Gym check-in logged for ${date}: not yet. The cookie remains dramatically nearby.`;
+}
+
+async function readPhase7ContextForGoal(text: string): Promise<string> {
+  if (!/(phase\s*7|mobile[-\s]?web|brighton|osu|google maps|neo|operator dashboard|pilot loop)/i.test(text)) {
+    return '';
+  }
+
+  try {
+    const context = await fs.readFile(phase7ContextPath, 'utf8');
+    return truncate(context, 14000);
+  } catch {
+    return '';
+  }
+}
+
+async function formatPulseBrief(userId?: string): Promise<string> {
+  const state = await readPulseState();
+  const goals = await listGoalStates();
+  const active = goals.filter((goal) => isActiveGoalStatus(goal.status));
+  const waiting = active.filter((goal) =>
+    goal.status === 'waiting-for-plan-approval'
+    || goal.status === 'plan-revised'
+    || goal.status === 'ready-for-qa-approval'
+  );
+  const blocked = goals.filter((goal) => goal.status === 'blocked' || goal.status === 'timed-out');
+  const today = localDateParts().date;
+  const gymStatus = userId ? state.gym[today]?.[userId]?.status : undefined;
+  const phase7ContextExists = await fileExists(phase7ContextPath);
+  const recent = goals.slice(0, 3);
+
+  return [
+    '## Pulse Brief',
+    `Date: ${today} (${pulseTimeZone})`,
+    `Phase 7 context: ${phase7ContextExists ? '`context/SWIFTPARK_PHASE7_CONTEXT.md` is available.' : 'not imported yet.'}`,
+    userId ? `Gym today: ${gymStatus === 'yes' ? 'yes 🍪' : gymStatus === 'not-yet' ? 'not yet' : 'not logged'}` : '',
+    '',
+    `Active goals: ${active.length}`,
+    `Waiting approvals/review: ${waiting.length}`,
+    `Blocked/timed-out goals: ${blocked.length}`,
+    '',
+    'Recent goals:',
+    ...(recent.length
+      ? recent.map((goal) => `- goal-${goal.id}: ${goal.status}; next: ${truncate(goal.nextAction || defaultNextAction(goal), 160)}`)
+      : ['- none']),
+    '',
+    'Suggested next command:',
+    waiting[0]
+      ? `- Review goal-${waiting[0].id}, then approve/revise: \`/goal-status goal_id:${waiting[0].id}\``
+      : active[0]
+        ? `- Check active work: \`/goal-status goal_id:${active[0].id}\``
+        : '- Start Phase 7B plan-only with the imported context when ready.',
+  ].filter(Boolean).join('\n');
+}
+
+function pulseGymButtons(date: string) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`pulse:gym:yes:${date}`)
+      .setLabel('Yes')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`pulse:gym:not-yet:${date}`)
+      .setLabel('Not yet')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+async function sendPulseGymPromptIfDue(): Promise<void> {
+  const now = localDateParts();
+  if (now.hour !== pulseGymPromptHour || now.minute !== pulseGymPromptMinute) return;
+
+  const state = await readPulseState();
+  if (state.lastGymPromptDate === now.date) return;
+
+  const userIds = Object.entries(state.users)
+    .filter(([userId, preference]) => allowedUsers.has(userId) && preference.enabled && preference.gymCheckIn)
+    .map(([userId]) => userId);
+
+  state.lastGymPromptDate = now.date;
+  await writePulseState(state);
+  if (userIds.length === 0) return;
+
+  const guild = await client.guilds.fetch(guildId).catch(() => undefined);
+  if (!guild) return;
+
+  const setup = await ensureChannels(guild);
+  const pulseChannel = setup.channels['personal-checkins'] || setup.channels['agent-status'];
+  if (!pulseChannel) return;
+
+  await pulseChannel.send({
+    content: [
+      `${userIds.map((userId) => `<@${userId}>`).join(' ')}`,
+      '',
+      '## Pulse Gym Check',
+      'Did you go to the gym this morning?',
+      'Tap **Yes** for your cookie.',
+    ].join('\n'),
+    components: [pulseGymButtons(now.date)],
+    allowedMentions: { users: userIds, roles: [], parse: [] },
+  }).catch(() => undefined);
+}
+
+function startPulseScheduler(): NodeJS.Timeout {
+  const interval = setInterval(() => {
+    void sendPulseGymPromptIfDue().catch((err) => {
+      console.warn(`Pulse scheduler failed: ${err?.message || String(err)}`);
+    });
+  }, 60000);
+  interval.unref?.();
+  void sendPulseGymPromptIfDue().catch(() => undefined);
+  return interval;
 }
 
 async function notifySubscribers(
@@ -1741,7 +2001,9 @@ async function updateGithubIssueWithPlan(goal: GoalState, plan: string): Promise
   return undefined;
 }
 
-function buildOrionPrompt(goal: GoalState, existingPlan?: string): string {
+async function buildOrionPrompt(goal: GoalState, existingPlan?: string): Promise<string> {
+  const phase7Context = await readPhase7ContextForGoal(`${goal.description}\n${existingPlan || ''}`);
+
   return `
 You are Orion, the SwiftPark Project Manager / Orchestrator powered by Codex. Create or revise a plan only. Do not modify files.
 
@@ -1760,6 +2022,7 @@ Context:
 - Agent preference: ${goal.agents}
 - Primary screen: ${goal.primaryScreen || '(none)'}
 ${existingPlan ? `\nExisting plan to revise:\n${existingPlan}` : ''}
+${phase7Context ? `\nImported Phase 7 context from ${relativeToCommandCenter(phase7ContextPath)}:\n${phase7Context}` : ''}
 
 Required safety:
 - Do not code yet.
@@ -1876,7 +2139,7 @@ async function runOrionPlanning(
   existingPlan?: string,
   progress?: GoalProgressReporter
 ): Promise<OrionPlanningResult> {
-  const prompt = buildOrionPrompt(goal, existingPlan);
+  const prompt = await buildOrionPrompt(goal, existingPlan);
   await fs.writeFile(goal.paths.orionPromptMd, prompt + '\n');
   await setAgentRunning('orion', goal, existingPlan ? 'Revise SwiftPark goal plan' : 'Create SwiftPark goal plan');
 
@@ -3390,22 +3653,25 @@ client.once('clientReady', async () => {
     currentTask: 'Discord command center online',
     startedAt: new Date().toISOString(),
   }).catch(() => undefined);
+  await refreshPulseAgentStatus().catch(() => undefined);
   await refreshStoredHelpGuide().catch((err) => {
     console.warn(`Help guide refresh failed: ${err?.message || String(err)}`);
   });
   await refreshStoredAgentStatusBoard().catch((err) => {
     console.warn(`Agent status board refresh failed: ${err?.message || String(err)}`);
   });
+  startPulseScheduler();
   console.log(`SwiftPark Agent logged in as ${client.user?.tag}`);
 });
 
 async function handleInteractionError(interaction: any, err: any): Promise<void> {
   const errorOutput = err?.stack || err?.message || String(err);
   const friendly = 'Command failed safely. Check #echo-logs for details, then retry or adjust the command.';
+  const interactionLabel = interaction.commandName ? `/${interaction.commandName}` : interaction.customId || 'interaction';
 
   if (isInteractionAckFailure(err)) {
     console.warn(
-      `Ignored stale or duplicate /${interaction.commandName} interaction without posting a failure: ${err?.message || String(err)}`
+      `Ignored stale or duplicate ${interactionLabel} interaction without posting a failure: ${err?.message || String(err)}`
     );
     return;
   }
@@ -3413,7 +3679,7 @@ async function handleInteractionError(interaction: any, err: any): Promise<void>
   try {
     if (interaction.guild) {
       const setup = await ensureChannels(interaction.guild);
-      await postCommandCenterError(setup.channels, `/${interaction.commandName} failed`, errorOutput).catch(() => undefined);
+      await postCommandCenterError(setup.channels, `${interactionLabel} failed`, errorOutput).catch(() => undefined);
     }
   } catch {
     // If channel repair also fails, still try to answer the interaction below.
@@ -3435,14 +3701,41 @@ async function handleInteractionError(interaction: any, err: any): Promise<void>
 }
 
 client.on('interactionCreate', async (interaction: any) => {
-  if (!interaction.isChatInputCommand()) return;
-
   try {
-    await handleChatInputCommand(interaction);
+    if (interaction.isChatInputCommand()) {
+      await handleChatInputCommand(interaction);
+      return;
+    }
+
+    if (interaction.isButton()) {
+      await handleButtonInteraction(interaction);
+    }
   } catch (err: any) {
     await handleInteractionError(interaction, err);
   }
 });
+
+async function handleButtonInteraction(interaction: any): Promise<void> {
+  if (!interaction.customId?.startsWith('pulse:gym:')) return;
+
+  if (!allowedUsers.has(interaction.user.id)) {
+    await safeInitialReply(interaction, {
+      content: 'You are not authorized to use Pulse check-ins.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const [, , rawStatus, rawDate] = String(interaction.customId).split(':');
+  const status = rawStatus === 'yes' ? 'yes' : 'not-yet';
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate || '') ? rawDate : localDateParts().date;
+  const message = await recordPulseGymCheckin(interaction.user.id, status, date);
+
+  await safeInitialReply(interaction, {
+    content: message,
+    ephemeral: true,
+  });
+}
 
 async function handleChatInputCommand(interaction: any): Promise<void> {
   if (!allowedUsers.has(interaction.user.id)) {
@@ -3638,6 +3931,88 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     await interaction.editReply(setting === 'on'
       ? 'Notifications are on. I will ping you for plan-ready, approval-needed, completion, and failure events.'
       : 'Notifications are off.');
+    return;
+  }
+
+  if (interaction.commandName === 'pulse') {
+    const setting = interaction.options.getString('setting') || 'brief';
+    const state = await readPulseState();
+    const current = state.users[interaction.user.id] || { enabled: false, gymCheckIn: false, updatedAt: new Date().toISOString() };
+
+    if (setting === 'on') {
+      const updated = await setPulsePreference(interaction.user.id, { enabled: true, gymCheckIn: true });
+      await interaction.editReply(
+        [
+          'Pulse is on for you.',
+          updated.gymCheckIn
+            ? `Gym check-in is on. Pulse asks at ${String(pulseGymPromptHour).padStart(2, '0')}:${String(pulseGymPromptMinute).padStart(2, '0')} ${pulseTimeZone}.`
+            : '',
+          'Use `/pulse-checkin gym:yes` any time to claim the cookie manually.',
+        ].filter(Boolean).join('\n')
+      );
+      return;
+    }
+
+    if (setting === 'off') {
+      await setPulsePreference(interaction.user.id, { enabled: false, gymCheckIn: false });
+      await interaction.editReply('Pulse is off for you.');
+      return;
+    }
+
+    if (setting === 'gym-on') {
+      await setPulsePreference(interaction.user.id, { enabled: true, gymCheckIn: true });
+      await interaction.editReply(`Pulse gym check-in is on. Prompt time: ${String(pulseGymPromptHour).padStart(2, '0')}:${String(pulseGymPromptMinute).padStart(2, '0')} ${pulseTimeZone}.`);
+      return;
+    }
+
+    if (setting === 'gym-off') {
+      await setPulsePreference(interaction.user.id, { gymCheckIn: false });
+      await interaction.editReply('Pulse gym check-in is off.');
+      return;
+    }
+
+    if (setting === 'status') {
+      await interaction.editReply(
+        [
+          '## Pulse Status',
+          `Pulse: ${current.enabled ? 'on' : 'off'}`,
+          `Gym check-in: ${current.gymCheckIn ? 'on' : 'off'}`,
+          `Gym prompt: ${String(pulseGymPromptHour).padStart(2, '0')}:${String(pulseGymPromptMinute).padStart(2, '0')} ${pulseTimeZone}`,
+          `State file: \`${relativeToCommandCenter(pulseStatePath)}\``,
+        ].join('\n')
+      );
+      return;
+    }
+
+    await interaction.editReply(truncate(await formatPulseBrief(interaction.user.id), 1900));
+    return;
+  }
+
+  if (interaction.commandName === 'pulse-checkin') {
+    const gym = interaction.options.getString('gym') || 'status';
+    const today = localDateParts().date;
+
+    if (gym === 'yes' || gym === 'not-yet') {
+      await setPulsePreference(interaction.user.id, { enabled: true, gymCheckIn: true });
+      const message = await recordPulseGymCheckin(interaction.user.id, gym, today);
+      const channel = channels['personal-checkins'] || channels['agent-status'];
+      await channel.send(
+        gym === 'yes'
+          ? `<@${interaction.user.id}> logged the gym for ${today}. 🍪`
+          : `<@${interaction.user.id}> logged gym status for ${today}: not yet.`
+      ).catch(() => undefined);
+      await interaction.editReply(message);
+      return;
+    }
+
+    const state = await readPulseState();
+    const status = state.gym[today]?.[interaction.user.id]?.status;
+    await interaction.editReply(`Gym today (${today}): ${status === 'yes' ? 'yes 🍪' : status === 'not-yet' ? 'not yet' : 'not logged'}.`);
+    return;
+  }
+
+  if (interaction.commandName === 'daily-brief') {
+    await interaction.editReply(truncate(await formatPulseBrief(interaction.user.id), 1900));
     return;
   }
 

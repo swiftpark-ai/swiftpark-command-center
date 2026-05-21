@@ -51,6 +51,9 @@ for (const command of [
   '/goal-status',
   '/runs',
   '/notify',
+  '/pulse',
+  '/pulse-checkin',
+  '/daily-brief',
   '/cancel',
   '/github-status',
   '/jira-status',
@@ -147,6 +150,10 @@ for (const agentId of expectedAgentOrder) {
 }
 
 const botSource = await readFile(path.join(root, 'src', 'bot.ts'), 'utf8');
+assert(botSource.includes('pulse:gym:yes'), 'Pulse gym yes button missing');
+assert(botSource.includes('Pulse Gym Check'), 'Pulse gym prompt missing');
+assert(botSource.includes('context/SWIFTPARK_PHASE7_CONTEXT.md'), 'Phase 7 context path should be surfaced in Pulse brief');
+await access(path.join(root, 'context', 'SWIFTPARK_PHASE7_CONTEXT.md'));
 for (const screen of [
   'brighton-facility',
   'brighton-spot-map',
