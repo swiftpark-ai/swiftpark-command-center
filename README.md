@@ -136,11 +136,11 @@ Iris, Atlas, and Sentinel use their per-agent timeout settings, falling back to 
 
 Agent completion posts are phone-friendly:
 
-- Iris summaries include concise result, files changed, visual impact, tests run, risks/follow-up, and next action.
-- Atlas summaries include concise result, files changed, system impact, tests run, risks, and next action.
+- Iris and Atlas post the agent's final answer directly in their channels, with a short metadata header for files changed, local final-answer path, raw log path, and next action.
+- Atlas captures Codex's final message separately from the raw terminal transcript so token/log noise stays local.
 - Sentinel summaries include pass/fail, mode, selected screen(s), screenshots posted, local screenshot/report paths, warnings, and the approval or retry command.
 - Failures include retry guidance and captured logs stay local unless a small redacted failure excerpt is useful.
-- Iris and Atlas output channels receive the complete redacted agent response as chunks or an attached local log when it is too long for Discord. `#echo-status` stays concise.
+- Long Iris and Atlas final answers are split or attached without posting raw CLI transcripts into Discord. `#echo-status` stays concise.
 
 Track agents:
 

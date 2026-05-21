@@ -174,6 +174,8 @@ for (const snippet of [
   'resolveQaRoot',
   'clearGoalBlocker',
   'postLongAgentText',
+  'cleanAgentFinalOutput',
+  '--output-last-message',
   "'inspect-discord'",
   'discord-inspections',
 ]) {

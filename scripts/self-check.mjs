@@ -207,6 +207,9 @@ assert(botSource.includes('resolveQaRoot'), 'Sentinel QA root resolver missing')
 assert(botSource.includes('QA_ROOT'), 'Sentinel QA root override env support missing');
 assert(botSource.includes('clearGoalBlocker'), 'stale blocker cleanup path missing');
 assert(botSource.includes('postLongAgentText'), 'long Iris/Atlas output posting helper missing');
+assert(botSource.includes('cleanAgentFinalOutput'), 'Iris/Atlas final-output cleaner missing');
+assert(botSource.includes('--output-last-message'), 'Codex final-message capture missing');
+assert(!botSource.includes('formatImplementationAgentSummary(agent, goal, job, result.output'), 'implementation summaries should not parse raw CLI output');
 assert(!/console\.log\([^)]*process\.env/i.test(botSource), 'source must not log process.env');
 
 console.log('self-check passed');

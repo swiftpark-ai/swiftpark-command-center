@@ -106,6 +106,8 @@ type GoalStatus =
 type ShellResult = {
   ok: boolean;
   output: string;
+  finalOutput?: string;
+  finalOutputPath?: string;
   timedOut?: boolean;
   killed?: boolean;
   skipped?: boolean;
@@ -166,6 +168,7 @@ type JobRecord = {
   startedAt: string;
   endedAt?: string;
   outputPath?: string;
+  finalOutputPath?: string;
   summary?: string;
   error?: string;
 };
@@ -812,6 +815,18 @@ function summarizeAgentOutput(output: string): string {
   return truncate(lines.slice(-24).join('\n') || safeOutput, 1200);
 }
 
+function cleanAgentFinalOutput(output: string): string {
+  const safeOutput = stripAnsi(redactSensitive(output || '')).trim();
+  if (!safeOutput) return '(no final response captured)';
+
+  return safeOutput
+    .split('\n')
+    .filter((line) => !/^\s*tokens used\s*$/i.test(line))
+    .filter((line) => !/^\s*\d{1,3}(?:,\d{3})*\s*$/.test(line))
+    .join('\n')
+    .trim() || '(no final response captured)';
+}
+
 function extractSection(output: string, names: string[], maxLength = 1200): string {
   const safeOutput = stripAnsi(redactSensitive(output || ''));
   const escaped = names.map(escapeRegExp).join('|');
@@ -852,17 +867,11 @@ function formatImplementationAgentSummary(
   agent: 'iris' | 'atlas',
   goal: GoalState,
   job: JobRecord,
-  output: string,
   files: ChangedFileSummary[]
 ): string {
   const succeeded = job.status === 'succeeded';
   const skipped = job.status === 'skipped';
   const label = agent === 'iris' ? 'Iris / Claude' : 'Atlas / Codex';
-  const impactLabel = agent === 'iris' ? 'Visual impact' : 'System impact';
-  const impactSection = agent === 'iris'
-    ? ['Visual impact', 'UI impact', 'Impact']
-    : ['System impact', 'Backend impact', 'Impact'];
-  const risksLabel = agent === 'iris' ? 'Risks / follow-up' : 'Risks';
   const nextAction = succeeded
     ? agent === 'iris'
       ? `Review UI changes, then run Sentinel: \`/run-agent goal_id:${goal.id} agent:sentinel\`.`
@@ -875,20 +884,12 @@ function formatImplementationAgentSummary(
     `Status: ${succeeded ? 'PASS' : skipped ? 'SKIPPED' : 'FAIL'} (${label})`,
     `Goal: goal-${goal.id}`,
     `Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}`,
-    '',
-    `Summary: ${extractSection(output, ['Summary'])}`,
-    '',
+    job.finalOutputPath ? `Final answer: \`${relativeToCommandCenter(job.finalOutputPath)}\`` : '',
+    job.outputPath ? `Raw log: \`${relativeToCommandCenter(job.outputPath)}\`` : '',
     'Files changed:',
     formatChangedFiles(files),
-    '',
-    `${impactLabel}: ${extractSection(output, impactSection)}`,
-    '',
-    `Tests run: ${extractSection(output, ['Tests run', 'Tests'])}`,
-    '',
-    `${risksLabel}: ${extractSection(output, ['Risks or follow-up', 'Risks', 'Follow-up'])}`,
-    '',
     `Next action: ${nextAction}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function formatGenericAgentSummary(
@@ -3114,12 +3115,10 @@ Rules:
 - Do not make YC changes.
 - Keep changes scoped and preserve existing OSU and Brighton behavior unless the goal explicitly changes it.
 - Run relevant frontend checks or explain why they could not be run.
-
-Final response required:
-- Summary
-- Files changed
-- Tests run
-- Risks or follow-up
+- Write your final response as a natural Discord-ready answer.
+- Do not pad empty sections.
+- Do not repeat the same finding under multiple headings.
+- Include files changed, checks/tests, risks, and next action only when they add useful context.
 `.trim();
 }
 
@@ -3149,12 +3148,10 @@ Rules:
 - Do not make YC changes.
 - Keep changes scoped and preserve existing OSU and Brighton behavior unless the goal explicitly changes it.
 - Run relevant backend/system checks or explain why they could not be run.
-
-Final response required:
-- Summary
-- Files changed
-- Tests run
-- Risks or follow-up
+- Write your final response as a natural Discord-ready answer.
+- Do not pad empty sections.
+- Do not repeat the same finding under multiple headings.
+- Include files changed, checks/tests, risks, and next action only when they add useful context.
 `.trim();
 }
 
@@ -3277,9 +3274,21 @@ async function runImplementationAgent(goal: GoalState, agent: 'iris' | 'atlas', 
   const prompt = agent === 'iris' ? buildIrisPrompt(goal, task, plan) : buildAtlasPrompt(goal, task, plan);
 
   if (agent === 'atlas') {
-    return shell(
+    const finalOutputPath = path.join(goal.runDir, `${jobId || `atlas-${Date.now()}`}-final.md`);
+    const result = await shell(
       'codex',
-      ['exec', '--cd', goal.worktreePath, '--sandbox', 'workspace-write', '--color', 'never', prompt],
+      [
+        'exec',
+        '--cd',
+        goal.worktreePath,
+        '--sandbox',
+        'workspace-write',
+        '--color',
+        'never',
+        '--output-last-message',
+        finalOutputPath,
+        prompt,
+      ],
       goal.worktreePath,
       {
         timeoutMs: timeoutForAgent(agent),
@@ -3288,9 +3297,24 @@ async function runImplementationAgent(goal: GoalState, agent: 'iris' | 'atlas', 
         agent,
       }
     );
+
+    let finalOutput = '';
+    let finalMessageCaptured = false;
+    try {
+      finalOutput = await fs.readFile(finalOutputPath, 'utf8');
+      finalMessageCaptured = true;
+    } catch {
+      finalOutput = '';
+    }
+
+    return {
+      ...result,
+      finalOutput: cleanAgentFinalOutput(finalOutput || (result.ok ? result.output : '')),
+      finalOutputPath: finalMessageCaptured ? finalOutputPath : undefined,
+    };
   }
 
-  return shell(
+  const result = await shell(
     'claude',
     ['-p', '--permission-mode', 'acceptEdits', '--output-format', 'text', prompt],
     goal.worktreePath,
@@ -3301,6 +3325,11 @@ async function runImplementationAgent(goal: GoalState, agent: 'iris' | 'atlas', 
       agent,
     }
   );
+
+  return {
+    ...result,
+    finalOutput: cleanAgentFinalOutput(result.output),
+  };
 }
 
 async function cleanQaArtifacts(root: string) {
@@ -3876,6 +3905,7 @@ async function runAgentJob(
 
   let result: ShellResult = { ok: false, output: '' };
   let changedFiles: ChangedFileSummary[] = [];
+  let implementationFinalOutput = '';
   const hardTimeoutMs = timeoutForAgent(agent);
   const heartbeat = setInterval(() => {
     void (async () => {
@@ -3922,7 +3952,6 @@ async function runAgentJob(
     job.endedAt = new Date().toISOString();
     if (agent === 'iris' || agent === 'atlas') {
       changedFiles = await changedFilesForWorktree(goal.worktreePath).catch(() => []);
-      job.summary = formatImplementationAgentSummary(agent, goal, job, result.output, changedFiles);
     } else {
       job.summary = agent === 'sentinel'
         ? result.output
@@ -3935,7 +3964,6 @@ async function runAgentJob(
     job.error = redactSensitive(result.output);
     if (agent === 'iris' || agent === 'atlas') {
       changedFiles = await changedFilesForWorktree(goal.worktreePath).catch(() => []);
-      job.summary = formatImplementationAgentSummary(agent, goal, job, result.output, changedFiles);
     } else {
       job.summary = formatGenericAgentSummary(agent, goal, job, result.output);
     }
@@ -3944,6 +3972,23 @@ async function runAgentJob(
     job.endedAt ||= new Date().toISOString();
     job.outputPath = path.join(goal.runDir, `${job.id}.log`);
     await fs.writeFile(job.outputPath, redactSensitive(result.output || '(no output)') + '\n');
+
+    if (agent === 'iris' || agent === 'atlas') {
+      implementationFinalOutput = cleanAgentFinalOutput(
+        result.finalOutput || (job.status === 'succeeded' ? result.output : '')
+      );
+      if (implementationFinalOutput !== '(no final response captured)') {
+        const finalPath = result.finalOutputPath || path.join(goal.runDir, `${job.id}-final.md`);
+        await fs.writeFile(finalPath, implementationFinalOutput + '\n').catch(() => undefined);
+        job.finalOutputPath = finalPath;
+      }
+      job.summary = formatImplementationAgentSummary(agent, goal, job, changedFiles);
+    } else if (!job.summary) {
+      job.summary = agent === 'sentinel'
+        ? result.output
+        : formatGenericAgentSummary(agent, goal, job, result.output);
+    }
+
     activeJobs.delete(job.id);
 
     await updateGoalState(goal.id, (current) => {
@@ -3993,37 +4038,41 @@ async function runAgentJob(
   const summaryPath = path.join(goal.runDir, `${job.id}-summary.md`);
   await fs.writeFile(summaryPath, redactSensitive(job.summary || '(no summary)') + '\n').catch(() => undefined);
 
+  const completionHeader = [
+    `# ${agent} ${completionLabel}`,
+    `Goal: \`goal-${goal.id}\``,
+    `Branch: \`${goal.branchName}\``,
+    `Worktree: \`${goal.worktreePath}\``,
+    `Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}`,
+    agent === 'iris' || agent === 'atlas'
+      ? `Final answer: ${job.finalOutputPath ? `\`${relativeToCommandCenter(job.finalOutputPath)}\`` : '(not captured)'}`
+      : `Summary: \`${relativeToCommandCenter(summaryPath)}\``,
+    `Raw log: \`${relativeToCommandCenter(job.outputPath)}\``,
+  ].join('\n');
+
   await targetChannel.send({
-    content: [
-      `# ${agent} ${completionLabel}`,
-      `Goal: \`goal-${goal.id}\``,
-      `Branch: \`${goal.branchName}\``,
-      `Worktree: \`${goal.worktreePath}\``,
-      `Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}`,
-      `Output: \`${relativeToCommandCenter(job.outputPath)}\``,
-      `Summary: \`${relativeToCommandCenter(summaryPath)}\``,
-    ].join('\n'),
+    content: completionHeader,
     components: goalActionRows(goal),
   }).catch(() => {});
 
-  await postLongAgentText(
-    targetChannel,
-    `${agent} summary`,
-    job.summary || '(no summary)',
-    {
-      maxInlineChunks: agent === 'iris' || agent === 'atlas' ? 8 : 4,
-      filePath: summaryPath,
-    }
-  ).catch(() => undefined);
-
-  if ((agent === 'iris' || agent === 'atlas') && result.output.trim()) {
+  if (agent === 'iris' || agent === 'atlas') {
     await postLongAgentText(
       targetChannel,
-      `${agent} full captured output`,
-      result.output,
+      `${agent} final answer`,
+      implementationFinalOutput || '(no final response captured)',
+      {
+        maxInlineChunks: 8,
+        filePath: job.finalOutputPath,
+      }
+    ).catch(() => undefined);
+  } else {
+    await postLongAgentText(
+      targetChannel,
+      `${agent} summary`,
+      job.summary || '(no summary)',
       {
         maxInlineChunks: 4,
-        filePath: job.outputPath,
+        filePath: summaryPath,
       }
     ).catch(() => undefined);
   }
