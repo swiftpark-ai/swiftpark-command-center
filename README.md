@@ -80,7 +80,7 @@ Defaults:
 
 `/goal` creates `runs/goal-<id>/`, saves `goal.json`, `plan.md`, and `status.json`, writes a local GitHub issue body file for audit, creates a local worktree for agent isolation, asks Orion to plan, posts the complete plan to `#orion-planning` in multiple messages when needed, posts a summary to `#echo-build-feed`, and waits. Raw Codex CLI output is kept in the local job log; Discord and `plan.md` use only the extracted final Orion plan.
 
-When `mode` is omitted, new goals default to `execute-after-approval`: approving the plan starts Orion's recommended Iris/Atlas flow and then Sentinel. Use `mode:plan-only` or the **Plan Only** button when you want to approve planning without running agents.
+When `mode` is omitted, new goals default to `execute-after-approval`: approving the plan starts Orion's recommended agents only. Sentinel runs only when the plan has a supported QA target or implementation work needs smoke QA. Use `mode:plan-only` or the **Plan Only** button when you want to approve planning without running agents.
 
 GitHub issue creation/editing is disabled unless `GITHUB_ISSUES_ENABLED=true` or `COMMAND_CENTER_GITHUB_ISSUES_ENABLED=true` is set. When disabled, the bot keeps the local `github-issue-body.md` file only.
 
@@ -116,7 +116,7 @@ Approve the plan:
 
 Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target. Orion plan posts also include buttons: **Approve + Run**, **Plan Only**, **Summary**, **Full Plan**, **Run Iris**, **Run Atlas**, **Run Sentinel**, and **Cancel**.
 
-In `plan-only` mode, approval is recorded and the goal waits for an explicit agent button or `/run-agent`. In `execute-after-approval` mode, Iris and/or Atlas run based on the selected assignment, then Sentinel runs visual QA.
+In `plan-only` mode, approval is recorded and the goal waits for an explicit agent button or `/run-agent`. In `execute-after-approval` mode, Orion picks the practical next agents from the current plan, honors “hold/not needed/read-only” language, and skips Sentinel when the QA target is not ready.
 
 ## Run Agents
 
@@ -140,6 +140,7 @@ Agent completion posts are phone-friendly:
 - Atlas summaries include concise result, files changed, system impact, tests run, risks, and next action.
 - Sentinel summaries include pass/fail, mode, selected screen(s), screenshots posted, local screenshot/report paths, warnings, and the approval or retry command.
 - Failures include retry guidance and captured logs stay local unless a small redacted failure excerpt is useful.
+- Iris and Atlas output channels receive the complete redacted agent response as chunks or an attached local log when it is too long for Discord. `#echo-status` stays concise.
 
 Track agents:
 
@@ -162,9 +163,10 @@ Inspect or cancel goal runs:
 /jira-status
 /log-change summary:<text> goal_id:<optional>
 /decision summary:<text> rationale:<optional> goal_id:<optional>
+/inspect-discord source:<current-thread|orion-planning|iris-frontend|atlas-backend|sentinel-qa|echo-status|echo-logs|build-feed> goal_id:<optional> limit:<optional>
 ```
 
-`/plan`, `/goal-status`, `/cancel-goal`, `/cancel`, `/run-agent`, `/revise-goal`, `/approve`, and `/reject` infer the goal automatically when used inside a goal thread. Outside a thread, goal/target fields use Discord autocomplete for recent goals. `/plan` shows either a concise phone summary or the complete saved `plan.md` in clean Discord chunks. Orion's initial plan post uses the same full chunking path, so long plans should split across messages instead of dropping sections. `/goal-status` shows status, current step, agent, elapsed time, worktree path, whether `plan.md` exists, last error, and next expected action. `/runs` and `/active-runs` list recent, running, stale, failed, and approved goals. `/cancel-goal` and `/cancel` mark the goal canceled and stop tracked local subprocesses when possible. If an older subprocess survived a bot restart, stop it from the terminal and keep the run files for audit.
+`/plan`, `/goal-status`, `/cancel-goal`, `/cancel`, `/run-agent`, `/revise-goal`, `/approve`, and `/reject` infer the goal automatically when used inside a goal thread. Outside a thread, goal/target fields use Discord autocomplete for recent goals. `/plan` shows either a concise phone summary or the complete saved `plan.md` in clean Discord chunks. Orion's initial plan post uses the same full chunking path, so long plans should split across messages instead of dropping sections. `/goal-status` shows status, current step, agent, elapsed time, worktree path, whether `plan.md` exists, last error, and next expected action. `/runs` and `/active-runs` list recent, running, stale, failed, and approved goals. `/cancel-goal` and `/cancel` mark the goal canceled and stop tracked local subprocesses when possible. `/inspect-discord` is read-only bot-token inspection; it writes a local redacted report under `runs/discord-inspections/` and never uses a user token or self-bot. If an older subprocess survived a bot restart, stop it from the terminal and keep the run files for audit.
 
 ## Help And Revisions
 
@@ -181,7 +183,7 @@ Ask Orion to revise a goal plan:
 /revise-goal feedback:<text> target:<general|plan|iris|atlas|sentinel> goal_id:<optional>
 ```
 
-Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are classified before action: simple greetings/low-signal messages are ignored, questions get direct answers, approval-like messages show action buttons, and clear change requests revise the plan. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
+Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are classified before action: greetings get a quick response, direct status/repo questions are answered locally, brainstorming goes to Orion/Codex as a read-only chat reply, approval-like messages show action buttons, and clear change requests revise the saved plan. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
 
 ## Notifications
 
@@ -249,6 +251,7 @@ Manual log:
 - `screen`: posts only mobile and desktop screenshots for the selected screen.
 - `smoke`: posts the Brighton facility and Brighton spot-map core set.
 - `full`: posts all available manual screenshots, capped by `QA_MAX_SCREENSHOT_UPLOADS`.
+- Unsupported targets such as “dashboard” are skipped with a clear Sentinel message until a Playwright QA screen/route is registered. A skipped unsupported target is not reported as a Playwright failure.
 
 Standalone QA:
 

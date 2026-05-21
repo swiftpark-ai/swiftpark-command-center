@@ -15,6 +15,7 @@ const expectedCommands = [
   'help',
   'commands',
   'agents',
+  'inspect-discord',
   'run-agent',
   'test',
   'goal',

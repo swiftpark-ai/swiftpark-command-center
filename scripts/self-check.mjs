@@ -47,6 +47,7 @@ for (const command of [
   '/approve',
   '/run-agent',
   '/test',
+  '/inspect-discord',
   '/plan',
   '/goal-status',
   '/runs',
@@ -168,9 +169,14 @@ assert(botSource.includes('resolveGoalForInteraction'), 'goal thread inference h
 assert(botSource.includes('classifyGoalThreadMessage'), 'goal thread message classifier missing');
 assert(botSource.includes('greetingReply'), 'goal thread greeting response missing');
 assert(botSource.includes('answerGoalThreadQuestion'), 'goal thread question answer path missing');
+assert(botSource.includes('runOrionChat'), 'goal thread Codex chat reply path missing');
 assert(botSource.includes('hasSuccessfulImplementationJob'), 'agent approval guard missing');
 assert(botSource.includes('goalActionRows'), 'goal action buttons missing');
 assert(botSource.includes('goal:approve-run'), 'Approve + Run button missing');
+assert(botSource.includes('resolveExecutionDecision'), 'approve-and-run execution decision missing');
+assert(botSource.includes('planHoldsAgent'), 'agent hold/not-needed decision guard missing');
+assert(botSource.includes("'inspect-discord'"), 'read-only Discord inspection command missing');
+assert(botSource.includes('discord-inspections'), 'Discord inspection local report path missing');
 assert(botSource.includes("'execute-after-approval'"), 'execute-after-approval mode should be supported');
 assert(botSource.includes('.setAutocomplete(true)'), 'goal autocomplete should be enabled for command options');
 assert(botSource.includes('pulse:gym:yes'), 'Pulse gym yes button missing');
@@ -190,6 +196,9 @@ for (const screen of [
 }
 assert(botSource.includes('selectedSet'), 'QA screenshot de-duplication guard missing');
 assert(botSource.includes('QA result remains **${status}**'), 'QA upload warning should preserve PASS/FAIL status');
+assert(botSource.includes('qaUnsupportedTargets'), 'unsupported QA target registry missing');
+assert(botSource.includes('formatSentinelSkippedSummary'), 'Sentinel skipped-target summary missing');
+assert(botSource.includes('postLongAgentText'), 'long Iris/Atlas output posting helper missing');
 assert(!/console\.log\([^)]*process\.env/i.test(botSource), 'source must not log process.env');
 
 console.log('self-check passed');

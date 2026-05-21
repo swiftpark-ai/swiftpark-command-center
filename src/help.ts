@@ -33,6 +33,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '- `/help`: show this guide and update the guide in the help channel.',
     '- `/commands`: show the command directory.',
     '- `/agents`: show current agent status.',
+    '- `/inspect-discord`: safely fetch bot-visible Discord messages into a local redacted report.',
     '- `/github-status`: show safe GitHub readiness and optional read-only gh auth status.',
     '- `/jira-status`: show safe Jira configuration readiness without contacting Jira.',
     '- `/goal`: ask Orion to plan a goal.',
@@ -76,7 +77,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '',
     '## Approval Rules',
     '- Orion can plan or revise without implementation approval.',
-    "- New goals default to `execute-after-approval`; approving the plan starts Orion's recommended Iris/Atlas flow, then Sentinel.",
+    "- New goals default to `execute-after-approval`; approving the plan starts Orion's recommended agents only. Sentinel runs only when a supported QA target is ready.",
     '- Use `mode:plan-only` or **Plan Only** when you want approval without starting agents.',
     '- Iris, Atlas, and Sentinel require an approved plan.',
     '- Orion, Iris, Atlas, and Sentinel have configurable hard timeouts; `0` means no hard kill and heartbeats continue until they finish or are canceled.',
@@ -87,9 +88,13 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '## Screenshots',
     'Sentinel posts visual QA screenshots in #sentinel-qa. Screen mode posts only mobile + desktop for the selected screen. Smoke mode posts a small core set. Full mode posts all available screenshots, capped.',
     'Example: `/test mode:screen screen:brighton-spot-map label:"Brighton map mobile check"`',
+  ].join('\n');
+
+  const third = [
+    '# SwiftPark Command Center Guide, Continued',
     '',
     '## Revisions',
-    'Use `/revise-goal` for explicit plan changes. In goal threads, goal ids are inferred. When `ORION_THREAD_REPLIES_ENABLED=true` and Discord Message Content intent is enabled, normal messages from allowed users inside that goal thread are classified first: greetings are ignored, questions are answered, approval-like messages show buttons, and clear change requests revise the plan.',
+    'Use `/revise-goal` for explicit plan changes. In goal threads, goal ids are inferred. When `ORION_THREAD_REPLIES_ENABLED=true` and Discord Message Content intent is enabled, normal messages from allowed users inside that goal thread are classified first: greetings get a quick reply, direct status/repo questions are answered locally, brainstorming goes to Orion/Codex as a read-only chat reply, approval-like messages show buttons, and clear change requests revise the saved plan.',
     '',
     '## Notifications',
     'Use `/notify setting:on` to receive completion and approval-needed pings. Use `/notify setting:off` to disable them. The bot never uses @everyone or @here.',
@@ -102,7 +107,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     'Use `/github-status`, `/jira-status`, `/log-change`, and `/decision` for read-only integration checks and manual audit notes. External writes remain disabled unless separately configured and approved.',
   ].join('\n');
 
-  return [first, second];
+  return [first, second, third];
 }
 
 export function buildCommandDirectory(): string {
@@ -113,6 +118,7 @@ export function buildCommandDirectory(): string {
     '- `/help`',
     '- `/commands`',
     '- `/agents`',
+    '- `/inspect-discord source:<current-thread|orion-planning|iris-frontend|atlas-backend|sentinel-qa|echo-status|echo-logs|build-feed> goal_id:<optional id> limit:<optional number>`',
     '- `/github-status`',
     '- `/jira-status`',
     '- `/goal description:<text> mode:<plan-only|execute-after-approval> primary_screen:<screen> agents:<atlas|iris|both|auto>`',

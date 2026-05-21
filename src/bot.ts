@@ -104,10 +104,11 @@ type ShellResult = {
   output: string;
   timedOut?: boolean;
   killed?: boolean;
+  skipped?: boolean;
 };
 
 type QaRunSummary = {
-  status: 'PASS' | 'FAIL';
+  status: 'PASS' | 'FAIL' | 'SKIPPED';
   label: string;
   mode: QaMode;
   screens: string[];
@@ -135,7 +136,7 @@ type GoalProgressReporter = (
   detail?: string
 ) => Promise<void>;
 
-type GoalThreadMessageIntent = 'ignore' | 'greeting' | 'question' | 'approval-intent' | 'revision';
+type GoalThreadMessageIntent = 'ignore' | 'greeting' | 'question' | 'approval-intent' | 'revision' | 'chat';
 
 type OrionPlanningResult = {
   plan: string;
@@ -217,6 +218,40 @@ type ChangedFileSummary = {
   file: string;
 };
 
+type QaUnsupportedTarget = {
+  id: string;
+  aliases: string[];
+  reason: string;
+  nextAction: string;
+};
+
+type QaTaskParseResult = {
+  mode: QaMode;
+  screen: typeof qaScreenNames[number] | null;
+  unsupportedTarget?: QaUnsupportedTarget;
+};
+
+type ImplementationAgentId = 'iris' | 'atlas';
+
+type ExecutionDecision = {
+  agents: ImplementationAgentId[];
+  runSentinel: boolean;
+  sentinelTask: string;
+  sentinelReason: string;
+  reasons: string[];
+  skipped: string[];
+};
+
+type InspectDiscordSource =
+  | 'current-thread'
+  | 'orion-planning'
+  | 'iris-frontend'
+  | 'atlas-backend'
+  | 'sentinel-qa'
+  | 'echo-status'
+  | 'echo-logs'
+  | 'build-feed';
+
 type AgentRuntimeState = AgentDefinition & {
   status: AgentStatus;
   currentTask: string;
@@ -293,6 +328,34 @@ const qaProjects = [
   'mobile-chrome',
   'desktop-chrome',
 ] as const;
+
+const qaUnsupportedTargets: QaUnsupportedTarget[] = [
+  {
+    id: 'dashboard',
+    aliases: [
+      'dashboard',
+      'operator dashboard',
+      'admin dashboard',
+      'dashboard screenshot',
+      'dashboard screenshots',
+      'dashboard overview',
+      'dashboard route',
+    ],
+    reason: 'Dashboard screenshot automation is not registered in the Playwright QA target list yet.',
+    nextAction: 'Add a supported dashboard QA screen/route to the QA target registry, or ask Sentinel for one of the supported screens.',
+  },
+];
+
+const inspectDiscordSources: Array<{ name: string; value: InspectDiscordSource }> = [
+  { name: 'current-thread', value: 'current-thread' },
+  { name: 'orion-planning', value: 'orion-planning' },
+  { name: 'iris-frontend', value: 'iris-frontend' },
+  { name: 'atlas-backend', value: 'atlas-backend' },
+  { name: 'sentinel-qa', value: 'sentinel-qa' },
+  { name: 'echo-status', value: 'echo-status' },
+  { name: 'echo-logs', value: 'echo-logs' },
+  { name: 'build-feed', value: 'build-feed' },
+];
 
 const activeJobs = new Map<string, JobRecord>();
 const activeProcesses = new Map<string, {
@@ -544,6 +607,10 @@ function isQaScreenName(value: string | null): value is typeof qaScreenNames[num
   return Boolean(value && qaScreenNames.includes(value as typeof qaScreenNames[number]));
 }
 
+function isInspectDiscordSource(value: string | null): value is InspectDiscordSource {
+  return Boolean(value && inspectDiscordSources.some((source) => source.value === value));
+}
+
 function validScreenList(): string {
   return qaScreenNames.map((screen) => `- \`${screen}\``).join('\n');
 }
@@ -572,24 +639,35 @@ function getQaSelection(mode: QaMode, screen: string | null) {
   };
 }
 
-function parseQaTask(task: string, defaultScreen?: string) {
+function qaUnsupportedTargetForText(text: string): QaUnsupportedTarget | undefined {
+  const lower = text.toLowerCase();
+  return qaUnsupportedTargets.find((target) =>
+    target.aliases.some((alias) => lower.includes(alias.toLowerCase()))
+  );
+}
+
+function parseQaTask(task: string, defaultScreen?: string): QaTaskParseResult {
   const lowerTask = task.toLowerCase();
+  const unsupportedTarget = qaUnsupportedTargetForText(lowerTask);
 
   if (lowerTask.includes('full')) {
-    return { mode: 'full' as QaMode, screen: null };
+    return { mode: 'full' as QaMode, screen: null, unsupportedTarget };
   }
 
+  const defaultQaScreen = isQaScreenName(defaultScreen || null)
+    ? defaultScreen as typeof qaScreenNames[number]
+    : null;
   const taskScreen =
     qaScreenNames.find((screen) => lowerTask.includes(screen.toLowerCase())) ||
-    (isQaScreenName(defaultScreen || null) ? defaultScreen : null);
+    defaultQaScreen;
 
   if (lowerTask.includes('screen') || taskScreen) {
     return taskScreen
-      ? { mode: 'screen' as QaMode, screen: taskScreen }
-      : { mode: 'smoke' as QaMode, screen: null };
+      ? { mode: 'screen' as QaMode, screen: taskScreen, unsupportedTarget }
+      : { mode: 'smoke' as QaMode, screen: null, unsupportedTarget };
   }
 
-  return { mode: 'smoke' as QaMode, screen: null };
+  return { mode: 'smoke' as QaMode, screen: null, unsupportedTarget };
 }
 
 function buildQaScript(selection: ReturnType<typeof getQaSelection>): string {
@@ -620,19 +698,19 @@ function summarizeAgentOutput(output: string): string {
   return truncate(lines.slice(-24).join('\n') || safeOutput, 1200);
 }
 
-function extractSection(output: string, names: string[]): string {
+function extractSection(output: string, names: string[], maxLength = 1200): string {
   const safeOutput = stripAnsi(redactSensitive(output || ''));
   const escaped = names.map(escapeRegExp).join('|');
   const match = safeOutput.match(new RegExp(`(?:^|\\n)#{0,3}\\s*(?:${escaped})\\s*:?\\s*\\n([\\s\\S]*?)(?=\\n#{0,3}\\s*[A-Z][A-Za-z /-]{2,}\\s*:?\\s*\\n|$)`, 'i'));
   const value = match?.[1]?.trim();
-  if (value) return truncate(value, 500);
+  if (value) return truncate(value, maxLength);
 
   const lines = safeOutput
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .filter((line) => !/^(\$|>|npm |pnpm |yarn |codex |claude )/.test(line));
-  return truncate(lines.slice(-5).join('\n') || '(not reported)', 500);
+  return truncate(lines.slice(-8).join('\n') || '(not reported)', maxLength);
 }
 
 function formatChangedFiles(files: ChangedFileSummary[]): string {
@@ -664,6 +742,7 @@ function formatImplementationAgentSummary(
   files: ChangedFileSummary[]
 ): string {
   const succeeded = job.status === 'succeeded';
+  const skipped = job.status === 'skipped';
   const label = agent === 'iris' ? 'Iris / Claude' : 'Atlas / Codex';
   const impactLabel = agent === 'iris' ? 'Visual impact' : 'System impact';
   const impactSection = agent === 'iris'
@@ -674,10 +753,12 @@ function formatImplementationAgentSummary(
     ? agent === 'iris'
       ? `Review UI changes, then run Sentinel: \`/run-agent goal_id:${goal.id} agent:sentinel\`.`
       : `Review system changes, then run Sentinel or approve agent work: \`/approve target:${goal.agentApprovalToken}\`.`
-    : retryGuidance(agent, goal);
+    : skipped
+      ? `Review the skip reason, then revise the goal or rerun \`/run-agent goal_id:${goal.id} agent:${agent}\` when the task is ready.`
+      : retryGuidance(agent, goal);
 
   return [
-    `Status: ${succeeded ? 'PASS' : 'FAIL'} (${label})`,
+    `Status: ${succeeded ? 'PASS' : skipped ? 'SKIPPED' : 'FAIL'} (${label})`,
     `Goal: goal-${goal.id}`,
     `Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}`,
     '',
@@ -703,14 +784,15 @@ function formatGenericAgentSummary(
   output: string
 ): string {
   const succeeded = job.status === 'succeeded';
+  const skipped = job.status === 'skipped';
   return [
-    `Status: ${succeeded ? 'PASS' : 'FAIL'} (${agent})`,
+    `Status: ${succeeded ? 'PASS' : skipped ? 'SKIPPED' : 'FAIL'} (${agent})`,
     `Goal: goal-${goal.id}`,
     `Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}`,
     '',
     `Summary: ${extractSection(output, ['Summary'])}`,
     '',
-    `Next action: ${succeeded ? defaultNextAction(goal) : retryGuidance(agent, goal)}`,
+    `Next action: ${succeeded ? defaultNextAction(goal) : skipped ? 'Review the skip reason, then rerun only when the prerequisite is ready.' : retryGuidance(agent, goal)}`,
   ].join('\n');
 }
 
@@ -829,6 +911,32 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('agents')
       .setDescription('Show Orion, Iris, Atlas, Sentinel, Scout, Echo, and Pulse status'),
+
+    new SlashCommandBuilder()
+      .setName('inspect-discord')
+      .setDescription('Read recent bot-visible Discord messages into a local redacted report')
+      .addStringOption((option) =>
+        option
+          .setName('source')
+          .setDescription('Channel or current goal thread to inspect')
+          .setRequired(true)
+          .addChoices(...inspectDiscordSources)
+      )
+      .addStringOption((option) =>
+        option
+          .setName('goal_id')
+          .setDescription('Optional goal id when inspecting a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('limit')
+          .setDescription('Messages to fetch')
+          .setRequired(false)
+          .setMinValue(1)
+          .setMaxValue(50)
+      ),
 
     new SlashCommandBuilder()
       .setName('run-agent')
@@ -2004,6 +2112,21 @@ async function postOrionConversation(channel: TextChannel | any, goal: GoalState
   }
 }
 
+async function replyToGoalThreadMessage(message: any, goal: GoalState, response: string): Promise<void> {
+  const chunks = chunkMarkdownForDiscord(response);
+  const first = chunks.shift() || '(no response)';
+  await message.reply({
+    content: first,
+    components: goalActionRows(goal),
+  }).catch(async () => {
+    await message.channel?.send(first).catch(() => undefined);
+  });
+
+  for (const chunk of chunks) {
+    await message.channel?.send(chunk).catch(() => undefined);
+  }
+}
+
 function orionResponsePath(goal: GoalState, jobId: string): string {
   return path.join(goal.runDir, `${jobId}-response.md`);
 }
@@ -2058,11 +2181,11 @@ function classifyGoalThreadMessage(content: string): GoalThreadMessageIntent {
   }
 
   if (/^(thanks|thank you|ok|okay|cool|nice|lol|lmao|got it|sounds good)[.!? ]*$/i.test(normalized)) {
-    return 'ignore';
+    return 'greeting';
   }
 
   if (/\b(idiot|stupid|dumb)\b/i.test(normalized) && normalized.split(/\s+/).length <= 6) {
-    return 'ignore';
+    return 'greeting';
   }
 
   if (/[?]$/.test(normalized) || /^(what|where|which|who|why|how|can|could|should|would|does|do|did|is|are|am|will)\b/i.test(normalized)) {
@@ -2077,7 +2200,14 @@ function classifyGoalThreadMessage(content: string): GoalThreadMessageIntent {
     return 'revision';
   }
 
-  return normalized.length >= 24 ? 'question' : 'ignore';
+  return normalized.length >= 24 ? 'chat' : 'greeting';
+}
+
+function hasLocalGoalThreadAnswer(content: string): boolean {
+  const lower = content.toLowerCase();
+  return /\b(repo|repository|workspace|path|folder|directory|working in|worktree)\b/.test(lower)
+    || /\b(status|state|where are we|next|what now|what's next|whats next)\b/.test(lower)
+    || /\b(approve|approval|run|agent|iris|atlas|sentinel)\b/.test(lower);
 }
 
 async function answerGoalThreadQuestion(goal: GoalState, content: string): Promise<string> {
@@ -2129,9 +2259,16 @@ function approvalIntentReply(goal: GoalState): string {
   ].join('\n');
 }
 
-function greetingReply(goal: GoalState): string {
+function greetingReply(goal: GoalState, content = ''): string {
+  const normalized = content.trim().toLowerCase();
+  const opener = /\b(idiot|stupid|dumb)\b/.test(normalized)
+    ? "I hear the frustration. I'm still here and tracking the goal."
+    : /^(thanks|thank you|ok|okay|cool|nice|lol|lmao|got it|sounds good)[.!? ]*$/i.test(normalized)
+      ? 'Got it.'
+      : `Hey, I'm here on goal-${goal.id}.`;
+
   return [
-    `I'm here on goal-${goal.id}.`,
+    opener,
     `Status: \`${goal.status}\``,
     `Next: ${goal.nextAction || defaultNextAction(goal)}`,
     '',
@@ -2282,9 +2419,9 @@ Required safety:
 ${conversational ? `
 Respond like a concise planning partner in Discord. Start with the direct answer to the human, explain what changed or what you recommend, and keep the tone natural.
 Do not repeat the full planning template unless the human specifically asks for the full plan.
-Still leave a usable execution handoff for Iris, Atlas, and Sentinel inside the same Markdown response. A compact "Execution Handoff" section is enough.
-The handoff should include scope, acceptance criteria, agent assignment, QA target, risks, and approval/next action when those details changed.
-If the existing saved plan remains valid, say so and only list the delta.
+If the saved plan still stands, say that plainly and list only the practical delta.
+If this feedback changes what agents should do, include a compact "Execution Handoff" section with only changed scope, acceptance criteria, agent assignment, QA target, risks, and next action.
+If the feedback is conversational rather than a real plan change, answer conversationally and avoid creating template clutter.
 ` : `
 Return only the final Markdown plan. Do not include terminal logs, session metadata, web-search notes, token counts, preambles, or code fences.
 Use clear headings and enough detail for Iris, Atlas, and Sentinel to execute after approval.
@@ -2306,6 +2443,45 @@ Preferred Markdown outline:
 ## Risks / Constraints
 ## Human Approvals Needed
 `}
+`.trim();
+}
+
+async function buildOrionChatPrompt(goal: GoalState, message: string, existingPlan: string): Promise<string> {
+  const phase7Context = await readPhase7ContextForGoal(`${goal.description}\n${existingPlan}\n${message}`);
+
+  return `
+You are Orion, the SwiftPark Project Manager / Orchestrator powered by Codex. This is a conversational Discord thread reply, not a plan rewrite and not an implementation run.
+
+Goal:
+${goal.description}
+
+Current state:
+- Goal id: ${goal.id}
+- Status: ${goal.status}
+- Mode: ${goal.mode}
+- Agent preference: ${goal.agents}
+- Primary screen: ${goal.primaryScreen || '(none)'}
+- Configured product repo: ${repoPath}
+- Command center repo: ${commandCenterRoot}
+- Goal worktree: ${goal.worktreePath}
+- Goal branch: ${goal.branchName}
+
+Saved Orion plan/handoff:
+${existingPlan || '(no saved plan found)'}
+
+Human thread message:
+${redactSensitive(message)}
+${phase7Context ? `\nImported Phase 7 context from ${relativeToCommandCenter(phase7ContextPath)}:\n${phase7Context}` : ''}
+
+Rules:
+- Answer the human directly and naturally, like a planning partner inside Discord.
+- Do not use the full planning template.
+- Do not claim to have inspected files or run commands unless that context is already present here.
+- Do not modify files, browse, push, merge, deploy, open PRs, send emails, touch YC, contact Jira, or expose secrets.
+- If the human is brainstorming, brainstorm with them.
+- If the human asks whether the plan should change, explain the recommended change in prose.
+- If the human clearly asks to change the saved plan, mention that this should be saved as a revision, but do not output a full revised template in this chat reply.
+- Keep the answer Discord-friendly: concise, complete, and split-friendly.
 `.trim();
 }
 
@@ -2511,6 +2687,73 @@ async function runOrionPlanning(
   }).catch(() => undefined);
   await progress?.(latest, usedFallback ? 'Fallback Orion plan generated' : 'Orion plan complete', 'Posting plan to #orion-planning.');
   return { plan, job, usedFallback, fallbackReason };
+}
+
+async function runOrionChat(
+  goal: GoalState,
+  message: string,
+  channels: Record<string, TextChannel>,
+  requestedBy: string,
+  source = 'goal thread message'
+): Promise<string> {
+  const safeMessage = redactSensitive(message);
+  const existingPlan = await readPlan(goal);
+  const chatId = `orion-chat-${Date.now()}`;
+  const promptPath = path.join(goal.runDir, `${chatId}-prompt.md`);
+  const lastMessagePath = path.join(goal.runDir, `${chatId}-response.md`);
+  const logPath = path.join(goal.runDir, `${chatId}.log`);
+  const prompt = await buildOrionChatPrompt(goal, safeMessage, existingPlan);
+
+  await fs.writeFile(promptPath, prompt + '\n');
+  await setAgentRunning('orion', goal, `Replying in ${source}`);
+  await postAgentStatusBoard(channels).catch(() => undefined);
+
+  const result = await shell(
+    'codex',
+    ['exec', '--cd', repoPath, '--sandbox', 'read-only', '--color', 'never', '--output-last-message', lastMessagePath, prompt],
+    repoPath,
+    {
+      timeoutMs: orionPlanningTimeoutMs,
+      activeKey: chatId,
+      goalId: goal.id,
+      agent: 'orion',
+    }
+  );
+
+  let response = result.output;
+  try {
+    const lastMessage = await fs.readFile(lastMessagePath, 'utf8');
+    if (lastMessage.trim()) response = lastMessage;
+  } catch {
+    // Fall back to stdout capture.
+  }
+
+  if (!result.ok || !response.trim()) {
+    response = [
+      `I tried to answer through Orion/Codex, but the local chat call did not complete cleanly for goal-${goal.id}.`,
+      result.timedOut ? `It timed out after ${hardTimeoutLabel(orionPlanningTimeoutMs)}.` : '',
+      `Local log: \`${relativeToCommandCenter(logPath)}\``,
+      '',
+      'The saved plan was not changed. You can ask again, use the buttons, or use `/goal-status` in this thread.',
+    ].filter(Boolean).join('\n');
+  }
+
+  const safeResponse = redactSensitive(response);
+  await fs.writeFile(logPath, [
+    `Requested by: ${requestedBy}`,
+    `Source: ${source}`,
+    `Prompt: ${relativeToCommandCenter(promptPath)}`,
+    '',
+    'Raw output:',
+    result.output || '(no stdout)',
+    '',
+    'Final response:',
+    safeResponse,
+  ].join('\n') + '\n');
+  await fs.writeFile(lastMessagePath, safeResponse + '\n');
+  await setAgentFinished('orion', result.ok, safeResponse).catch(() => undefined);
+  await postAgentStatusBoard(channels).catch(() => undefined);
+  return safeResponse;
 }
 
 async function initializeGoal(
@@ -2785,11 +3028,11 @@ function defaultAgentTask(goal: GoalState, agent: RunnableAgentId): string {
   }
 
   if (agent === 'atlas') {
-    return `Implement Atlas backend/systems tasks from the Orion plan for goal-${goal.id}.`;
+    return `Run Atlas backend/systems tasks from the Orion plan for goal-${goal.id}. Obey any read-only, audit-only, hold, or no-code constraints in the plan.`;
   }
 
   if (agent === 'iris') {
-    return `Implement Iris frontend/visual tasks from the Orion plan for goal-${goal.id}.`;
+    return `Run Iris frontend/visual tasks from the Orion plan for goal-${goal.id}. Obey any read-only, audit-only, hold, or no-code constraints in the plan.`;
   }
 
   if (agent === 'sentinel') {
@@ -2801,19 +3044,95 @@ function defaultAgentTask(goal: GoalState, agent: RunnableAgentId): string {
   return 'Scout is stubbed for now. Do not browse, scrape, or access external accounts.';
 }
 
-function resolveExecutionAgents(goal: GoalState, plan: string): RunnableAgentId[] {
-  if (goal.agents === 'atlas') return ['atlas'];
-  if (goal.agents === 'iris') return ['iris'];
-  if (goal.agents === 'both') return ['atlas', 'iris'];
+function planHoldsAgent(text: string, agent: ImplementationAgentId | 'sentinel'): boolean {
+  const label = agent === 'iris' ? 'iris' : agent === 'atlas' ? 'atlas' : 'sentinel';
+  const role = agent === 'iris' ? 'frontend|visual|ui' : agent === 'atlas' ? 'backend|systems|api' : 'qa|screenshots|playwright';
+  return new RegExp(`\\b${label}\\b[^\\n.]{0,80}\\b(hold|stand by|not needed|not required|wait|skip|defer)\\b`, 'i').test(text)
+    || new RegExp(`\\b(no|skip|defer|hold)\\b[^\\n.]{0,80}\\b(${label}|${role})\\b`, 'i').test(text)
+    || new RegExp(`\\b(${label}|${role})\\b[^\\n.]{0,80}\\b(only after|after .*confirmed|after .*identified)\\b`, 'i').test(text);
+}
 
+function resolveExecutionDecision(goal: GoalState, plan: string): ExecutionDecision {
   const text = `${goal.description}\n${plan}`.toLowerCase();
-  const wantsBackend = /\b(api|backend|server|database|schema|endpoint|supabase|auth|migration|yolo|occupancy)\b/.test(text);
-  const wantsFrontend = /\b(frontend|ui|screen|route|page|component|layout|mobile|desktop|visual|button|card|map)\b/.test(text) || Boolean(goal.primaryScreen);
+  const agents = new Set<ImplementationAgentId>();
+  const reasons: string[] = [];
+  const skipped: string[] = [];
+  const wantsBackend = /\b(api|backend|server|database|schema|endpoint|supabase|auth|migration|yolo|occupancy|cv|detection|camera|websocket|ws)\b/.test(text);
+  const wantsFrontend = /\b(frontend|ui|screen|route|page|component|layout|mobile|desktop|visual|button|card|map|bottom sheet|selected spot)\b/.test(text) || Boolean(goal.primaryScreen);
+  const readOnlyAudit = /\b(read-only|read only|audit only|planning\/audit|planning and audit|inspect|review|summarize|no code|do not implement|no implementation)\b/.test(text);
+  const implementationRequested = /\b(implement|build|fix|change|update|modify|polish|refactor|wire|add|remove)\b/.test(text) && !/\bdo not implement\b/.test(text);
 
-  if (wantsBackend && wantsFrontend) return ['atlas', 'iris'];
-  if (wantsBackend) return ['atlas'];
-  if (wantsFrontend) return ['iris'];
-  return ['atlas', 'iris'];
+  if (goal.agents === 'atlas' || goal.agents === 'both') agents.add('atlas');
+  if (goal.agents === 'iris' || goal.agents === 'both') agents.add('iris');
+  if (goal.agents !== 'auto') {
+    reasons.push(`Goal agent preference is \`${goal.agents}\`.`);
+  }
+
+  if (goal.agents === 'auto') {
+    if (wantsBackend) {
+      agents.add('atlas');
+      reasons.push(readOnlyAudit ? 'Atlas selected for backend/CV read-only audit language.' : 'Atlas selected from backend/systems language.');
+    }
+    if (wantsFrontend && (implementationRequested || !readOnlyAudit)) {
+      agents.add('iris');
+      reasons.push('Iris selected from frontend/visual language.');
+    }
+    if (agents.size === 0 && implementationRequested) {
+      agents.add('atlas');
+      agents.add('iris');
+      reasons.push('Implementation was requested but ownership was ambiguous, so both implementation agents were selected.');
+    }
+  }
+
+  for (const agent of ['atlas', 'iris'] as const) {
+    if (agents.has(agent) && planHoldsAgent(text, agent)) {
+      agents.delete(agent);
+      skipped.push(`${agent} held by Orion plan language.`);
+    }
+  }
+
+  if (readOnlyAudit && !implementationRequested && agents.has('iris') && !/\biris\b[^.\n]*(review|inspect|audit)\b/i.test(text)) {
+    agents.delete('iris');
+    skipped.push('Iris skipped because the current plan reads as read-only/audit work, not frontend implementation.');
+  }
+
+  const supportedScreenRequested = qaScreenNames.some((screen) => text.includes(screen.toLowerCase())) || isQaScreenName(goal.primaryScreen || null);
+  const qaRequested = /\b(sentinel|qa|playwright|screenshot|screenshots|visual approval|visual check|test)\b/.test(text) || supportedScreenRequested;
+  const unsupportedTarget = qaUnsupportedTargetForText(text);
+  const sentinelHeld = planHoldsAgent(text, 'sentinel');
+  let runSentinel = false;
+  let sentinelReason = 'Sentinel not selected.';
+
+  if (sentinelHeld) {
+    skipped.push('Sentinel held by Orion plan language.');
+    sentinelReason = 'Orion plan says Sentinel should wait.';
+  } else if (unsupportedTarget && !supportedScreenRequested) {
+    skipped.push(`Sentinel skipped: ${unsupportedTarget.reason}`);
+    sentinelReason = unsupportedTarget.nextAction;
+  } else if (qaRequested && supportedScreenRequested) {
+    runSentinel = true;
+    sentinelReason = 'Supported QA screen requested.';
+  } else if (agents.size > 0 && !readOnlyAudit) {
+    runSentinel = true;
+    sentinelReason = 'Implementation agents are running, so Sentinel smoke QA follows.';
+  } else {
+    sentinelReason = readOnlyAudit
+      ? 'Read-only/audit plan: Sentinel waits until a concrete supported QA target exists.'
+      : 'No concrete supported QA target found.';
+  }
+
+  return {
+    agents: [...agents],
+    runSentinel,
+    sentinelTask: runSentinel ? defaultAgentTask(goal, 'sentinel') : 'Sentinel not selected for this approved flow.',
+    sentinelReason,
+    reasons,
+    skipped,
+  };
+}
+
+function resolveExecutionAgents(goal: GoalState, plan: string): RunnableAgentId[] {
+  return resolveExecutionDecision(goal, plan).agents;
 }
 
 async function runImplementationAgent(goal: GoalState, agent: 'iris' | 'atlas', task: string, jobId?: string): Promise<ShellResult> {
@@ -3003,6 +3322,49 @@ async function postTerminalOutput(channel: TextChannel, title: string, output: s
   }
 }
 
+async function postLongAgentText(
+  channel: TextChannel,
+  title: string,
+  content: string,
+  options: { maxInlineChunks?: number; filePath?: string } = {}
+): Promise<void> {
+  const safeContent = redactSensitive(content || '(no output)').trim() || '(no output)';
+  const chunks = chunkMarkdownForDiscord(safeContent, 1750);
+  const maxInlineChunks = options.maxInlineChunks ?? 6;
+
+  if (chunks.length <= maxInlineChunks) {
+    for (const [index, chunk] of chunks.entries()) {
+      const suffix = chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : '';
+      await channel.send([`**${title}${suffix}**`, chunk].join('\n')).catch(() => undefined);
+    }
+    return;
+  }
+
+  if (options.filePath) {
+    await channel.send({
+      content: [
+        `**${title}** is long, so the complete redacted output is attached and saved locally.`,
+        `Local path: \`${relativeToCommandCenter(options.filePath)}\``,
+        `Inline preview: ${Math.min(2, chunks.length)} of ${chunks.length} chunks.`,
+      ].join('\n'),
+      files: [options.filePath],
+    }).catch(async () => {
+      await channel.send(
+        [
+          `**${title}** is long. Discord attachment upload failed, but the full output is saved locally:`,
+          `\`${relativeToCommandCenter(options.filePath!)}\``,
+        ].join('\n')
+      ).catch(() => undefined);
+    });
+  } else {
+    await channel.send(`**${title}** is long. Posting inline preview only because no local file path was provided.`).catch(() => undefined);
+  }
+
+  for (const [index, chunk] of chunks.slice(0, 2).entries()) {
+    await channel.send([`**${title} preview (${index + 1}/2)**`, chunk].join('\n')).catch(() => undefined);
+  }
+}
+
 async function runQaFlow(
   root: string,
   channel: TextChannel,
@@ -3076,7 +3438,9 @@ async function runQaFlow(
 function formatSentinelSummary(goal: GoalState, qa: QaRunSummary): string {
   const approval = qa.status === 'PASS'
     ? `Approve QA with \`/approve target:${goal.qaApprovalToken}\` after reviewing screenshots.`
-    : retryGuidance('sentinel', goal);
+    : qa.status === 'SKIPPED'
+      ? 'Review the skip reason and add/register the requested QA target before rerunning Sentinel.'
+      : retryGuidance('sentinel', goal);
 
   return [
     `Status: ${qa.status} (Sentinel)`,
@@ -3094,6 +3458,20 @@ function formatSentinelSummary(goal: GoalState, qa: QaRunSummary): string {
   ].filter(Boolean).join('\n');
 }
 
+function formatSentinelSkippedSummary(goal: GoalState, task: string, target: QaUnsupportedTarget): string {
+  return [
+    'Status: SKIPPED (Sentinel)',
+    `Goal: goal-${goal.id}`,
+    'Mode: screen/smoke not run',
+    `Requested target: ${target.id}`,
+    `Reason: ${target.reason}`,
+    `Task: ${redactSensitive(task)}`,
+    'Screenshots posted: 0/0',
+    `Supported screens:\n${validScreenList()}`,
+    `Next action: ${target.nextAction}`,
+  ].join('\n');
+}
+
 async function runSentinelAgent(
   goal: GoalState,
   task: string,
@@ -3101,6 +3479,19 @@ async function runSentinelAgent(
   jobId?: string
 ): Promise<ShellResult> {
   const parsed = parseQaTask(task, goal.primaryScreen);
+  if (parsed.unsupportedTarget && !parsed.screen && parsed.mode !== 'full') {
+    const output = formatSentinelSkippedSummary(goal, task, parsed.unsupportedTarget);
+    await channels['qa-visual'].send([
+      '# Sentinel QA Skipped',
+      output,
+    ].join('\n')).catch(() => undefined);
+    return {
+      ok: true,
+      skipped: true,
+      output,
+    };
+  }
+
   const selection = getQaSelection(parsed.mode, parsed.screen);
   const label = `goal-${goal.id} ${selection.mode}${parsed.screen ? ` ${parsed.screen}` : ''}`;
   const result = await runQaFlow(goal.worktreePath, channels['qa-visual'], label, selection, {
@@ -3329,7 +3720,7 @@ async function runAgentJob(
       result = await runScoutStub(goal, task);
     }
 
-    job.status = result.ok ? 'succeeded' : 'failed';
+    job.status = result.skipped ? 'skipped' : result.timedOut ? 'timed-out' : result.ok ? 'succeeded' : 'failed';
     job.endedAt = new Date().toISOString();
     if (agent === 'iris' || agent === 'atlas') {
       changedFiles = await changedFilesForWorktree(goal.worktreePath).catch(() => []);
@@ -3358,23 +3749,29 @@ async function runAgentJob(
     activeJobs.delete(job.id);
 
     await updateGoalState(goal.id, (current) => {
-      current.status = job.status === 'succeeded' && agent === 'sentinel'
+      const succeeded = job.status === 'succeeded';
+      const skipped = job.status === 'skipped';
+      current.status = succeeded && agent === 'sentinel'
         ? 'ready-for-qa-approval'
-        : job.status === 'succeeded'
+        : succeeded || skipped
           ? 'plan-approved'
-          : 'blocked';
-      current.currentStep = job.status === 'succeeded' ? `${agent} complete` : `${agent} failed`;
+          : job.status === 'timed-out'
+            ? 'timed-out'
+            : 'blocked';
+      current.currentStep = succeeded ? `${agent} complete` : skipped ? `${agent} skipped` : `${agent} failed`;
       current.currentAgent = agent;
-      current.lastError = job.status === 'succeeded' ? undefined : result.output;
-      current.nextAction = job.status === 'succeeded'
+      current.lastError = succeeded || skipped ? undefined : result.output;
+      current.nextAction = succeeded
         ? agent === 'sentinel'
           ? defaultNextAction(current)
           : `Review ${agent} output, then approve with /approve target:${current.agentApprovalToken} or use the Sentinel button.`
+        : skipped
+          ? `Review ${agent} skip reason in ${relativeToCommandCenter(job.outputPath || goal.runDir)}, then revise or rerun only when ready.`
         : `Review ${agent} output in ${relativeToCommandCenter(job.outputPath || goal.runDir)}; revise or rerun after fixing the blocker.`;
       upsertJob(current, job);
     });
 
-    await setAgentFinished(agent, job.status === 'succeeded', job.summary || result.output);
+    await setAgentFinished(agent, job.status === 'succeeded' || job.status === 'skipped', job.summary || result.output);
     await postAgentStatusBoard(channels).catch(() => undefined);
   }
 
@@ -3388,22 +3785,50 @@ async function runAgentJob(
           ? channels['yc-reddit']
           : channels['pm-planning'];
 
+  const completionLabel = job.status === 'succeeded'
+    ? 'Complete'
+    : job.status === 'skipped'
+      ? 'Skipped'
+      : job.status === 'timed-out'
+        ? 'Timed Out'
+        : 'Failed';
+  const summaryPath = path.join(goal.runDir, `${job.id}-summary.md`);
+  await fs.writeFile(summaryPath, redactSensitive(job.summary || '(no summary)') + '\n').catch(() => undefined);
+
   await targetChannel.send({
     content: [
-      `# ${agent} ${job.status === 'succeeded' ? 'Complete' : 'Failed'}`,
+      `# ${agent} ${completionLabel}`,
       `Goal: \`goal-${goal.id}\``,
       `Branch: \`${goal.branchName}\``,
       `Worktree: \`${goal.worktreePath}\``,
       `Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}`,
       `Output: \`${relativeToCommandCenter(job.outputPath)}\``,
-      '',
-      'Summary:',
-      '```text',
-      truncate(job.summary || '(no summary)', 1300),
-      '```',
+      `Summary: \`${relativeToCommandCenter(summaryPath)}\``,
     ].join('\n'),
     components: goalActionRows(goal),
   }).catch(() => {});
+
+  await postLongAgentText(
+    targetChannel,
+    `${agent} summary`,
+    job.summary || '(no summary)',
+    {
+      maxInlineChunks: agent === 'iris' || agent === 'atlas' ? 8 : 4,
+      filePath: summaryPath,
+    }
+  ).catch(() => undefined);
+
+  if ((agent === 'iris' || agent === 'atlas') && result.output.trim()) {
+    await postLongAgentText(
+      targetChannel,
+      `${agent} full captured output`,
+      result.output,
+      {
+        maxInlineChunks: 4,
+        filePath: job.outputPath,
+      }
+    ).catch(() => undefined);
+  }
 
   if (agent !== 'sentinel' && maxAgentLogChunks > 0 && !result.ok) {
     await postTerminalOutput(targetChannel, 'Captured output', result.output, maxAgentLogChunks).catch(() => {});
@@ -3413,7 +3838,7 @@ async function runAgentJob(
     `${agent} for goal-${goal.id} ${job.status}. Elapsed: ${formatElapsed(job.startedAt, job.endedAt)}.`
   ).catch(() => {});
 
-  if (job.status !== 'succeeded') {
+  if (job.status !== 'succeeded' && job.status !== 'skipped') {
     await postCommandCenterError(
       channels,
       `${agent} failed for goal-${goal.id}`,
@@ -3422,7 +3847,7 @@ async function runAgentJob(
     ).catch(() => undefined);
   } else {
     await channels['build-feed']?.send(
-      `${agent} finished for goal-${goal.id}. Next: ${(await readGoalState(goal.id))?.nextAction || defaultNextAction(goal)}`
+      `${agent} ${job.status === 'skipped' ? 'skipped' : 'finished'} for goal-${goal.id}. Next: ${(await readGoalState(goal.id))?.nextAction || defaultNextAction(goal)}`
     ).catch(() => undefined);
   }
 
@@ -3430,10 +3855,12 @@ async function runAgentJob(
     channels,
     job.status === 'succeeded'
       ? `${agent} finished for goal-${goal.id}. Summary: ${truncate(job.summary || '(no summary)', 700)}`
+      : job.status === 'skipped'
+        ? `${agent} skipped for goal-${goal.id}. Check the agent output channel for the prerequisite.`
       : `${agent} failed for goal-${goal.id}. Check #echo-status and the agent output channel.`
   ).catch(() => undefined);
 
-  return job.status === 'succeeded';
+  return job.status === 'succeeded' || job.status === 'skipped';
 }
 
 async function startApprovedExecution(
@@ -3448,16 +3875,38 @@ async function startApprovedExecution(
   }
 
   const plan = await readPlan(goal);
-  const agents = resolveExecutionAgents(goal, plan);
+  const decision = resolveExecutionDecision(goal, plan);
+  const agents = decision.agents;
 
   await channels['agent-status'].send(
     [
       `# Execution Started: goal-${goal.id}`,
       `Approved by: <@${approvedBy}>`,
       `Agents: ${agents.map((agent) => `\`${agent}\``).join(', ') || '(none)'}`,
-      `Sentinel QA: \`${goal.primaryScreen ? `screen ${goal.primaryScreen}` : 'smoke'}\` after agent work`,
-    ].join('\n')
+      `Sentinel QA: ${decision.runSentinel ? `\`${goal.primaryScreen ? `screen ${goal.primaryScreen}` : 'smoke'}\`` : 'not selected'}`,
+      decision.reasons.length ? `Why: ${decision.reasons.join(' ')}` : '',
+      decision.skipped.length ? `Skipped: ${decision.skipped.join(' ')}` : '',
+      `Sentinel reason: ${decision.sentinelReason}`,
+    ].filter(Boolean).join('\n')
   );
+
+  if (agents.length === 0 && !decision.runSentinel) {
+    await updateGoalState(goal.id, (current) => {
+      current.status = 'plan-approved';
+      current.currentStep = 'Plan approved; no automatic agents selected';
+      current.currentAgent = undefined;
+      current.lastError = undefined;
+      current.nextAction = `${decision.sentinelReason} Use the thread buttons or /run-agent when a concrete task is ready.`;
+    });
+    await channels['agent-status'].send(
+      `goal-${goal.id} approved, but Orion did not select any automatic agent run. ${decision.sentinelReason}`
+    ).catch(() => undefined);
+    await postToGoalThread(
+      goal,
+      `Plan approved, but Orion did not select any automatic agent run. ${decision.sentinelReason}`
+    ).catch(() => undefined);
+    return;
+  }
 
   for (const agent of agents) {
     const ok = await runAgentJob(goal.id, agent, defaultAgentTask(goal, agent), channels, approvedBy);
@@ -3467,25 +3916,54 @@ async function startApprovedExecution(
     }
   }
 
-  const qaOk = await runAgentJob(goal.id, 'sentinel', defaultAgentTask(goal, 'sentinel'), channels, approvedBy);
+  if (!decision.runSentinel) {
+    await updateGoalState(goal.id, (current) => {
+      current.status = 'plan-approved';
+      current.currentStep = agents.length > 0 ? 'Recommended agents complete' : 'Plan approved';
+      current.currentAgent = undefined;
+      current.lastError = undefined;
+      current.nextAction = `${decision.sentinelReason} Use Run Sentinel only after a supported QA target is ready.`;
+    });
+    await channels['agent-status'].send(
+      `goal-${goal.id} recommended agent flow finished without Sentinel. ${decision.sentinelReason}`
+    ).catch(() => undefined);
+    await notifySubscribers(
+      channels,
+      `Recommended agents finished for goal-${goal.id}. Sentinel was not run: ${decision.sentinelReason}`
+    ).catch(() => undefined);
+    return;
+  }
+
+  const qaOk = await runAgentJob(goal.id, 'sentinel', decision.sentinelTask, channels, approvedBy);
+  const afterQa = await readGoalState(goal.id);
+  const latestSentinelJob = afterQa?.jobs
+    .filter((job) => job.agent === 'sentinel')
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+  const qaSkipped = latestSentinelJob?.status === 'skipped';
   await updateGoalState(goal.id, (current) => {
-    current.status = qaOk ? 'ready-for-qa-approval' : 'blocked';
-    current.currentStep = qaOk ? 'Sentinel QA complete' : 'Sentinel QA failed';
+    current.status = qaOk && !qaSkipped ? 'ready-for-qa-approval' : qaSkipped ? 'plan-approved' : 'blocked';
+    current.currentStep = qaOk && !qaSkipped ? 'Sentinel QA complete' : qaSkipped ? 'Sentinel QA skipped' : 'Sentinel QA failed';
     current.currentAgent = 'sentinel';
-    current.nextAction = qaOk
+    current.nextAction = qaOk && !qaSkipped
       ? `Review screenshots, then approve QA with /approve target:${current.qaApprovalToken}.`
+      : qaSkipped
+        ? 'Review #sentinel-qa and add/register the requested QA target before rerunning Sentinel.'
       : 'Review #sentinel-qa and rerun Sentinel after fixing the blocker.';
   });
 
   await channels['agent-status'].send(
-    qaOk
+    qaOk && !qaSkipped
       ? `goal-${goal.id} is waiting for QA approval. Run \`/approve target:${goal.qaApprovalToken}\` after reviewing screenshots.`
+      : qaSkipped
+        ? `goal-${goal.id} Sentinel QA was skipped with guidance. Merge and deploy remain blocked.`
       : `goal-${goal.id} is blocked after Sentinel QA. Merge and deploy remain blocked.`
   );
   await notifySubscribers(
     channels,
-    qaOk
+    qaOk && !qaSkipped
       ? `Sentinel QA finished for goal-${goal.id}. Approval needed: /approve target:${goal.qaApprovalToken}`
+      : qaSkipped
+        ? `Sentinel QA skipped for goal-${goal.id}. Check #sentinel-qa for the prerequisite.`
       : `Sentinel QA failed for goal-${goal.id}. Check #sentinel-qa.`
   ).catch(() => undefined);
 }
@@ -3565,6 +4043,112 @@ async function replyWithChunks(interaction: any, header: string, chunks: string[
   for (const message of messages) {
     await interaction.followUp(truncate(message, 1900)).catch(() => undefined);
   }
+}
+
+function inspectSourceChannelId(source: InspectDiscordSource): ChannelId | undefined {
+  const map: Partial<Record<InspectDiscordSource, ChannelId>> = {
+    'orion-planning': 'pm-planning',
+    'iris-frontend': 'frontend',
+    'atlas-backend': 'backend',
+    'sentinel-qa': 'qa-visual',
+    'echo-status': 'agent-status',
+    'echo-logs': 'logs',
+    'build-feed': 'build-feed',
+  };
+  return map[source];
+}
+
+async function resolveInspectDiscordChannel(
+  interaction: any,
+  channels: Record<string, TextChannel>,
+  source: InspectDiscordSource,
+  goalId?: string
+): Promise<{ channel?: any; label: string; error?: string }> {
+  if (source !== 'current-thread') {
+    const channelId = inspectSourceChannelId(source);
+    const channel = channelId ? channels[channelId] : undefined;
+    return channel
+      ? { channel, label: `#${channel.name}` }
+      : { label: source, error: `Could not find configured channel for ${source}. Run /setup, then retry.` };
+  }
+
+  const threadGoal = await goalForThreadId(interaction.channelId);
+  const requestedGoal = goalId ? await readGoalState(goalId) : undefined;
+  const goal = requestedGoal || threadGoal;
+  if (goal?.threadId) {
+    const channel = await client.channels.fetch(goal.threadId).catch(() => undefined);
+    if (channel) return { channel, label: goal.threadName ? `thread ${goal.threadName}` : `goal-${goal.id} thread` };
+  }
+
+  if (interaction.channel?.isThread?.()) {
+    return { channel: interaction.channel, label: `thread ${interaction.channel.name || interaction.channelId}` };
+  }
+
+  return {
+    label: 'current-thread',
+    error: 'Use `source:current-thread` inside a goal thread, or provide a goal_id whose thread exists.',
+  };
+}
+
+async function inspectDiscordMessages(
+  interaction: any,
+  channels: Record<string, TextChannel>,
+  source: InspectDiscordSource,
+  limit: number,
+  goalId?: string
+): Promise<string> {
+  const resolved = await resolveInspectDiscordChannel(interaction, channels, source, goalId);
+  if (resolved.error || !resolved.channel?.messages?.fetch) {
+    return resolved.error || `Could not fetch messages for ${resolved.label}.`;
+  }
+
+  const fetched = await resolved.channel.messages.fetch({ limit });
+  const messages = [...fetched.values()].sort((a: any, b: any) => a.createdTimestamp - b.createdTimestamp);
+  const reportDir = path.join(runsDir, 'discord-inspections');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const reportPath = path.join(reportDir, `${timestamp}-${source}.md`);
+  const lines = [
+    `# Discord Inspection: ${source}`,
+    '',
+    `Created: ${new Date().toISOString()}`,
+    `Mode: read-only bot-token Discord API inspection; no user token or self-bot access.`,
+    `Source: ${resolved.label}`,
+    `Messages fetched: ${messages.length}`,
+    goalId ? `Goal filter/request: goal-${normalizeGoalId(goalId)}` : '',
+    '',
+  ].filter(Boolean);
+
+  for (const message of messages) {
+    const author = message.author?.tag || message.author?.username || message.author?.id || 'unknown';
+    const created = message.createdAt?.toISOString?.() || new Date(message.createdTimestamp || Date.now()).toISOString();
+    const content = redactSensitive(String(message.content || '').trim() || '(no visible message content)');
+    const attachments = message.attachments?.size
+      ? [...message.attachments.values()].map((attachment: any) => {
+          const name = attachment.name || 'attachment';
+          const type = attachment.contentType || 'unknown';
+          const size = typeof attachment.size === 'number' ? `${attachment.size} bytes` : 'unknown size';
+          return `${name} (${type}, ${size})`;
+        })
+      : [];
+
+    lines.push(
+      `## ${created} - ${author}`,
+      '',
+      content,
+      attachments.length ? `Attachments: ${attachments.join(', ')}` : '',
+      '',
+    );
+  }
+
+  await fs.mkdir(reportDir, { recursive: true });
+  await fs.writeFile(reportPath, lines.filter((line) => line !== undefined).join('\n').trim() + '\n');
+
+  return [
+    `Discord inspection complete for ${resolved.label}.`,
+    `Messages fetched: ${messages.length}`,
+    `Local report: \`${relativeToCommandCenter(reportPath)}\``,
+    'Safety: read-only bot API inspection; no user token, self-bot, external posting, or secret printing.',
+  ].join('\n');
 }
 
 function isFailedGoal(goal: GoalState): boolean {
@@ -3847,7 +4431,7 @@ async function approvePlanGoal(
     current.currentAgent = undefined;
     current.lastError = undefined;
     current.nextAction = runRecommended
-      ? 'Starting approved Iris/Atlas/Sentinel flow.'
+      ? 'Starting Orion-recommended agent flow.'
       : 'Plan-only mode: use the action buttons or /run-agent when ready.';
     current.approvals.plan ||= {
       approvedAt: new Date().toISOString(),
@@ -3860,7 +4444,7 @@ async function approvePlanGoal(
     `Approved Orion plan **${updated.planApprovalToken}** for goal-${updated.id} by <@${approvedBy}>. ${runRecommended ? 'Recommended execution is starting.' : 'Plan-only approval recorded.'}`
   ).catch(() => undefined);
   await channels['pm-planning'].send(
-    `Plan approved for goal-${updated.id}. ${runRecommended ? 'Starting approved Iris/Atlas/Sentinel flow.' : 'Plan-only mode: waiting for an explicit agent run.'}`
+    `Plan approved for goal-${updated.id}. ${runRecommended ? 'Starting Orion-recommended agent flow.' : 'Plan-only mode: waiting for an explicit agent run.'}`
   ).catch(() => undefined);
   await postToGoalThread(
     updated,
@@ -4196,14 +4780,21 @@ client.on('messageCreate', async (message: any) => {
     const setup = await ensureChannels(message.guild);
     if (intent === 'greeting') {
       await message.reply({
-        content: greetingReply(goal),
+        content: greetingReply(goal, content),
         components: goalActionRows(goal),
       }).catch(() => undefined);
       return;
     }
 
     if (intent === 'question') {
-      await message.reply(await answerGoalThreadQuestion(goal, content)).catch(() => undefined);
+      if (hasLocalGoalThreadAnswer(content)) {
+        await message.reply(await answerGoalThreadQuestion(goal, content)).catch(() => undefined);
+        return;
+      }
+
+      await message.channel?.sendTyping?.().catch(() => undefined);
+      const response = await runOrionChat(goal, content, setup.channels, message.author.id, 'goal thread question');
+      await replyToGoalThreadMessage(message, goal, response);
       return;
     }
 
@@ -4212,6 +4803,13 @@ client.on('messageCreate', async (message: any) => {
         content: approvalIntentReply(goal),
         components: goalActionRows(goal),
       }).catch(() => undefined);
+      return;
+    }
+
+    if (intent === 'chat') {
+      await message.channel?.sendTyping?.().catch(() => undefined);
+      const response = await runOrionChat(goal, content, setup.channels, message.author.id, 'goal thread chat');
+      await replyToGoalThreadMessage(message, goal, response);
       return;
     }
 
@@ -4236,7 +4834,7 @@ client.on('messageCreate', async (message: any) => {
     if (setup) {
       await postCommandCenterError(setup.channels, `Goal thread reply failed for goal-${goal.id}`, errorOutput, goal.id).catch(() => undefined);
     }
-    await message.reply('Orion could not revise from that thread message. Check #echo-logs.').catch(() => undefined);
+    await message.reply('Orion could not respond to that thread message. Check #echo-logs.').catch(() => undefined);
   }
 });
 
@@ -4492,7 +5090,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     await postOrUpdateStoredMessages(helpGuideRefPath(), channels['help'], buildHelpGuideMessages(requiredChannelDefinitions));
     await interaction.editReply(
       [
-        `Updated the command-center guide in <#${channels['help'].id}> as two messages.`,
+        `Updated the command-center guide in <#${channels['help'].id}>.`,
         '',
         truncate(buildCommandDirectory(), 1700),
       ].join('\n')
@@ -4542,6 +5140,20 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     const status = await formatAgentsStatus();
     await postAgentStatusBoard(channels).catch(() => undefined);
     await interaction.editReply(truncate(status, 1900));
+    return;
+  }
+
+  if (interaction.commandName === 'inspect-discord') {
+    const rawSource = interaction.options.getString('source', true);
+    if (!isInspectDiscordSource(rawSource)) {
+      await interaction.editReply(`Unknown inspection source: \`${rawSource}\`.`);
+      return;
+    }
+
+    const requestedGoalId = interaction.options.getString('goal_id') || undefined;
+    const limit = interaction.options.getInteger('limit') || 25;
+    const summary = await inspectDiscordMessages(interaction, channels, rawSource, limit, requestedGoalId);
+    await interaction.editReply(truncate(summary, 1900));
     return;
   }
 

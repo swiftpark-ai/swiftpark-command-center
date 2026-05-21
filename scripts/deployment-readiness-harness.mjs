@@ -160,10 +160,22 @@ for (const snippet of ['SwiftPark Command Center Guide', 'Command Directory', 'E
 pass('/help', 'guide sections present');
 
 const botSource = await readFile(path.join(root, 'src', 'bot.ts'), 'utf8');
-for (const snippet of ['goalActionRows', 'goal:approve-run', 'classifyGoalThreadMessage', 'answerGoalThreadQuestion']) {
+for (const snippet of [
+  'goalActionRows',
+  'goal:approve-run',
+  'classifyGoalThreadMessage',
+  'answerGoalThreadQuestion',
+  'runOrionChat',
+  'resolveExecutionDecision',
+  'planHoldsAgent',
+  'postLongAgentText',
+  "'inspect-discord'",
+  'discord-inspections',
+]) {
   assert(botSource.includes(snippet), `bot source missing ${snippet}`);
 }
-pass('goal thread actions', 'buttons and message classifier present');
+pass('goal thread actions', 'buttons, classifier, and read-only Orion chat present');
+pass('/inspect-discord', 'read-only bot-visible message inspection writes local redacted reports');
 
 assert.deepEqual(agentDefinitions.map((agent) => agent.id), ['orion', 'iris', 'atlas', 'sentinel', 'scout', 'echo', 'pulse']);
 assert(agentDefinitions.find((agent) => agent.id === 'echo')?.defaultStatus === 'online');
@@ -214,6 +226,8 @@ const conversationalRevision = extractOrionPlan([
 ].join('\n'));
 assert(conversationalRevision.ok, '/revise-goal should accept conversational Orion Markdown');
 pass('/revise-goal conversational', 'natural Orion response accepted as saved handoff');
+assert(botSource.includes("return normalized.length >= 24 ? 'chat' : 'greeting'"), 'short thread messages should not be silently ignored');
+pass('conversational thread replies', 'non-command thread messages are answered instead of ignored');
 
 const revisedPlan = makePlan(true);
 assert(validateOrionPlan(revisedPlan), '/revise-goal revised plan should validate');
@@ -250,8 +264,11 @@ assert(screenFiles.every((file) => file.includes('brighton-spot-map')), 'screen 
 assert.equal(new Set(screenFiles).size, screenFiles.length, 'screen mode should avoid duplicate screenshots');
 assert.equal(smokeFiles.length, 4, 'smoke mode should post two screens across two projects');
 assert(fullFiles.length <= 6, 'full mode should respect cap');
+assert(botSource.includes('qaUnsupportedTargets'), 'unsupported QA target registry missing');
+assert(botSource.includes('Status: SKIPPED (Sentinel)'), 'Sentinel skipped target summary missing');
 pass('/run-agent sentinel', 'targeted brighton-spot-map QA selects exactly mobile + desktop');
 pass('/test screen/smoke/full', `screen=${screenFiles.length}, smoke=${smokeFiles.length}, full capped=${fullFiles.length}`);
+pass('unsupported dashboard QA', 'dashboard targets skip with guidance until a Playwright screen is registered');
 
 const uploadWarningPreservesStatus = 'QA result remains **PASS**.';
 assert(uploadWarningPreservesStatus.includes('PASS'), 'upload warning should not convert PASS to ERROR');
