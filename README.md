@@ -114,7 +114,7 @@ Approve the plan:
 /approve target:plan-<goal_id>
 ```
 
-Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target. Orion plan posts also include buttons: **Approve + Run**, **Plan Only**, **Ask Orion**, **Summary**, **Full Plan**, **Run Iris**, **Run Atlas**, **Run Sentinel**, and **Cancel**. **Ask Orion** opens a short modal and posts a read-only conversational answer in the goal thread without revising the saved plan.
+Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target. Orion plan posts also include buttons: **Approve + Run**, **Plan Only**, **Ask Orion**, **Revise Plan**, **Summary**, **Full Plan**, **Run Iris**, **Run Atlas**, **Run Sentinel**, and **Cancel**. **Ask Orion** opens a short modal and posts a read-only conversational answer in the goal thread without revising the saved plan. **Revise Plan** is the explicit state-changing path for saving feedback into `plan.md` and returning the goal to approval-needed.
 
 In `plan-only` mode, approval is recorded and the goal waits for an explicit agent button or `/run-agent`. In `execute-after-approval` mode, Orion picks the practical next agents from the current plan, honors “hold/not needed/read-only” language, and skips Sentinel when the QA target is not ready.
 
@@ -184,7 +184,7 @@ Ask Orion to revise a goal plan:
 /revise-goal feedback:<text> target:<general|plan|iris|atlas|sentinel> goal_id:<optional>
 ```
 
-Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are classified before action: greetings get a quick response, direct status/repo questions are answered locally, brainstorming goes to Orion/Codex as a read-only chat reply, approval-like messages show action buttons, and clear change requests revise the saved plan. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
+Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are chat-first: direct status/repo questions are answered locally, approval-like messages show action buttons, and everything else goes to Orion/Codex as a read-only conversational reply. Change requests no longer rewrite the saved plan from plain chat; use **Revise Plan** or `/revise-goal` when you intentionally want to save a new handoff. Recent goal-thread chat is saved locally as redacted JSONL context under the goal run folder. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
 
 ## Notifications
 

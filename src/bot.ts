@@ -145,6 +145,14 @@ type GoalProgressReporter = (
 
 type GoalThreadMessageIntent = 'ignore' | 'greeting' | 'question' | 'approval-intent' | 'revision' | 'chat';
 
+type GoalThreadHistoryEntry = {
+  at: string;
+  role: 'human' | 'orion' | 'system';
+  author: string;
+  source: string;
+  content: string;
+};
+
 type OrionPlanningResult = {
   plan: string;
   job: JobRecord;
@@ -1642,6 +1650,72 @@ async function setAgentFinished(agentId: AgentId, ok: boolean, summary: string):
   });
 }
 
+function needsStartupGoalRecovery(goal: GoalState): boolean {
+  return ['created', 'planning', 'revision-pending-approval', 'running'].includes(goal.status)
+    || goal.jobs.some((job) => job.status === 'running');
+}
+
+async function reconcileStartupState(): Promise<{ goals: number; agents: number }> {
+  let recoveredGoals = 0;
+  let recoveredAgents = 0;
+  const now = new Date().toISOString();
+  const recoveryMessage = 'Recovered after bot restart; no live subprocess is tracked for this run.';
+  const goals = await listGoalStates();
+
+  for (const goal of goals) {
+    if (!needsStartupGoalRecovery(goal)) continue;
+
+    await updateGoalState(goal.id, (current) => {
+      current.status = 'blocked';
+      current.currentStep = 'Recovered after bot restart';
+      current.currentAgent = undefined;
+      current.lastError = recoveryMessage;
+      current.nextAction = `Review goal-${current.id}, then use the thread buttons, /clear-blocker, or rerun the needed agent.`;
+      for (const job of current.jobs) {
+        if (job.status === 'running') {
+          job.status = 'failed';
+          job.endedAt = now;
+          job.error = recoveryMessage;
+        }
+      }
+    }).catch(() => undefined);
+    recoveredGoals += 1;
+  }
+
+  const registry = await readAgentRegistry();
+  let registryChanged = false;
+  for (const definition of agentDefinitions) {
+    const agent = registry[definition.id];
+    if (agent.status !== 'running') continue;
+
+    const idleStatus = definition.defaultStatus === 'online'
+      ? 'online'
+      : definition.defaultStatus === 'disabled'
+        ? 'disabled'
+        : 'idle';
+    registry[definition.id] = {
+      ...agent,
+      status: idleStatus,
+      currentTask: '',
+      currentStep: 'Recovered after bot restart',
+      currentGoalId: undefined,
+      currentWorktree: undefined,
+      currentBranch: undefined,
+      startedAt: undefined,
+      lastUpdateAt: now,
+      lastOutputSummary: recoveryMessage,
+    };
+    registryChanged = true;
+    recoveredAgents += 1;
+  }
+
+  if (registryChanged) {
+    await writeAgentRegistry(registry);
+  }
+
+  return { goals: recoveredGoals, agents: recoveredAgents };
+}
+
 async function readNotificationPreferences(): Promise<NotificationPreferences> {
   try {
     return JSON.parse(await fs.readFile(notificationPreferencesPath(), 'utf8')) as NotificationPreferences;
@@ -2257,6 +2331,45 @@ function orionResponsePath(goal: GoalState, jobId: string): string {
   return path.join(goal.runDir, `${jobId}-response.md`);
 }
 
+function goalThreadHistoryPath(goal: GoalState): string {
+  return path.join(goal.runDir, 'thread-history.jsonl');
+}
+
+async function appendGoalThreadHistory(goal: GoalState, entry: Omit<GoalThreadHistoryEntry, 'at'>): Promise<void> {
+  const record: GoalThreadHistoryEntry = {
+    ...entry,
+    at: new Date().toISOString(),
+    content: truncate(redactSensitive(entry.content), 6000),
+  };
+  await fs.appendFile(goalThreadHistoryPath(goal), JSON.stringify(record) + '\n').catch(() => undefined);
+}
+
+async function readGoalThreadHistory(goal: GoalState, limit = 12): Promise<GoalThreadHistoryEntry[]> {
+  try {
+    const raw = await fs.readFile(goalThreadHistoryPath(goal), 'utf8');
+    return raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-limit)
+      .map((line) => JSON.parse(line) as GoalThreadHistoryEntry);
+  } catch {
+    return [];
+  }
+}
+
+function formatGoalThreadHistoryForPrompt(history: GoalThreadHistoryEntry[]): string {
+  if (history.length === 0) return '(no previous thread messages captured)';
+  return history
+    .map((entry) => {
+      const speaker = entry.role === 'orion' ? 'Orion' : entry.role === 'human' ? `Human ${entry.author}` : 'System';
+      return [
+        `### ${speaker} (${entry.source}, ${entry.at})`,
+        truncate(entry.content, 1200),
+      ].join('\n');
+    })
+    .join('\n\n');
+}
+
 async function postGoalControls(channel: TextChannel | any, goal: GoalState, label = 'Goal controls'): Promise<void> {
   if (!channel?.send) return;
   await channel.send({
@@ -2281,15 +2394,19 @@ function goalActionRows(goal: GoalState): ActionRowBuilder<ButtonBuilder>[] {
         .setLabel('Ask Orion')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId(`goal:plan-summary:${goal.id}`)
-        .setLabel('Summary')
+        .setCustomId(`goal:revise-plan:${goal.id}`)
+        .setLabel('Revise Plan')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`goal:plan-full:${goal.id}`)
-        .setLabel('Full Plan')
+        .setCustomId(`goal:plan-summary:${goal.id}`)
+        .setLabel('Summary')
         .setStyle(ButtonStyle.Secondary)
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`goal:plan-full:${goal.id}`)
+        .setLabel('Full Plan')
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`goal:run-iris:${goal.id}`)
         .setLabel('Run Iris')
@@ -2584,7 +2701,12 @@ Preferred Markdown outline:
 `.trim();
 }
 
-async function buildOrionChatPrompt(goal: GoalState, message: string, existingPlan: string): Promise<string> {
+async function buildOrionChatPrompt(
+  goal: GoalState,
+  message: string,
+  existingPlan: string,
+  threadHistory: GoalThreadHistoryEntry[] = []
+): Promise<string> {
   const phase7Context = await readPhase7ContextForGoal(`${goal.description}\n${existingPlan}\n${message}`);
 
   return `
@@ -2607,6 +2729,9 @@ Current state:
 Saved Orion plan/handoff:
 ${existingPlan || '(no saved plan found)'}
 
+Recent thread context:
+${formatGoalThreadHistoryForPrompt(threadHistory)}
+
 Human thread message:
 ${redactSensitive(message)}
 ${phase7Context ? `\nImported Phase 7 context from ${relativeToCommandCenter(phase7ContextPath)}:\n${phase7Context}` : ''}
@@ -2614,11 +2739,13 @@ ${phase7Context ? `\nImported Phase 7 context from ${relativeToCommandCenter(pha
 Rules:
 - Answer the human directly and naturally, like a planning partner inside Discord.
 - Do not use the full planning template.
+- Treat the goal thread as chat-first: normal messages should get normal replies.
+- Do not rewrite, revise, approve, run agents, or change saved goal state from this chat call.
 - Do not claim to have inspected files or run commands unless that context is already present here.
 - Do not modify files, browse, push, merge, deploy, open PRs, send emails, touch YC, contact Jira, or expose secrets.
 - If the human is brainstorming, brainstorm with them.
 - If the human asks whether the plan should change, explain the recommended change in prose.
-- If the human clearly asks to change the saved plan, mention that this should be saved as a revision, but do not output a full revised template in this chat reply.
+- If the human clearly asks to change the saved plan, talk through the change and mention they can use the Revise Plan button or /revise-goal to save it.
 - Keep the answer Discord-friendly: concise, complete, and split-friendly.
 `.trim();
 }
@@ -2840,9 +2967,16 @@ async function runOrionChat(
   const promptPath = path.join(goal.runDir, `${chatId}-prompt.md`);
   const lastMessagePath = path.join(goal.runDir, `${chatId}-response.md`);
   const logPath = path.join(goal.runDir, `${chatId}.log`);
-  const prompt = await buildOrionChatPrompt(goal, safeMessage, existingPlan);
+  const threadHistory = await readGoalThreadHistory(goal);
+  const prompt = await buildOrionChatPrompt(goal, safeMessage, existingPlan, threadHistory);
 
   await fs.writeFile(promptPath, prompt + '\n');
+  await appendGoalThreadHistory(goal, {
+    role: 'human',
+    author: requestedBy,
+    source,
+    content: safeMessage,
+  });
   await setAgentRunning('orion', goal, `Replying in ${source}`);
   await postAgentStatusBoard(channels).catch(() => undefined);
 
@@ -2889,6 +3023,12 @@ async function runOrionChat(
     safeResponse,
   ].join('\n') + '\n');
   await fs.writeFile(lastMessagePath, safeResponse + '\n');
+  await appendGoalThreadHistory(goal, {
+    role: 'orion',
+    author: 'orion',
+    source,
+    content: safeResponse,
+  });
   await setAgentFinished('orion', result.ok, safeResponse).catch(() => undefined);
   await postAgentStatusBoard(channels).catch(() => undefined);
   return safeResponse;
@@ -4935,6 +5075,10 @@ process.once('SIGTERM', () => {
 
 client.once('clientReady', async () => {
   await fs.mkdir(runsDir, { recursive: true });
+  const recovered = await reconcileStartupState().catch((err) => {
+    console.warn(`Startup reconciliation failed: ${err?.message || String(err)}`);
+    return { goals: 0, agents: 0 };
+  });
   await updateAgent('echo', {
     status: 'online',
     currentTask: 'Discord command center online',
@@ -4948,6 +5092,9 @@ client.once('clientReady', async () => {
     console.warn(`Agent status board refresh failed: ${err?.message || String(err)}`);
   });
   startPulseScheduler();
+  if (recovered.goals || recovered.agents) {
+    console.warn(`Startup reconciliation recovered ${recovered.goals} goal(s) and ${recovered.agents} agent status record(s).`);
+  }
   console.log(`SwiftPark Agent logged in as ${client.user?.tag}`);
 });
 
@@ -5084,24 +5231,11 @@ client.on('messageCreate', async (message: any) => {
 
   try {
     const setup = await ensureChannels(message.guild);
-    if (intent === 'greeting') {
-      await message.reply({
-        content: greetingReply(goal, content),
-        components: goalActionRows(goal),
-      }).catch(() => undefined);
-      return;
-    }
-
     if (intent === 'question') {
       if (hasLocalGoalThreadAnswer(content)) {
         await message.reply(await answerGoalThreadQuestion(goal, content)).catch(() => undefined);
         return;
       }
-
-      await message.channel?.sendTyping?.().catch(() => undefined);
-      const response = await runOrionChat(goal, content, setup.channels, message.author.id, 'goal thread question');
-      await replyToGoalThreadMessage(message, goal, response);
-      return;
     }
 
     if (intent === 'approval-intent') {
@@ -5112,28 +5246,25 @@ client.on('messageCreate', async (message: any) => {
       return;
     }
 
-    if (intent === 'chat') {
-      await message.channel?.sendTyping?.().catch(() => undefined);
-      const response = await runOrionChat(goal, content, setup.channels, message.author.id, 'goal thread chat');
-      await replyToGoalThreadMessage(message, goal, response);
-      return;
-    }
-
     await message.channel?.sendTyping?.().catch(() => undefined);
-    await message.reply(`Orion is revising goal-${goal.id} from this thread message.`).catch(() => undefined);
-    const { goal: revisedGoal } = await reviseGoalPlan(
+    const response = await runOrionChat(
       goal,
       content,
-      'thread',
       setup.channels,
       message.author.id,
-      'goal thread message'
+      intent === 'revision' ? 'goal thread chat; revision not saved' : `goal thread ${intent}`
     );
-    await postAgentStatusBoard(setup.channels).catch(() => undefined);
-    await notifySubscribers(
-      setup.channels,
-      `Orion revised goal-${revisedGoal.id} from a goal thread message. Approval needed: /approve target:${revisedGoal.planApprovalToken}`
-    ).catch(() => undefined);
+    await replyToGoalThreadMessage(
+      message,
+      goal,
+      intent === 'revision'
+        ? [
+          response,
+          '',
+          '_Saved plan unchanged. Use **Revise Plan** below or `/revise-goal` if you want Orion to save this as the new execution handoff._',
+        ].join('\n')
+        : response
+    );
   } catch (err: any) {
     const errorOutput = err?.stack || err?.message || String(err);
     const setup = await ensureChannels(message.guild).catch(() => undefined);
@@ -5181,12 +5312,14 @@ async function handleModalSubmitInteraction(interaction: any): Promise<void> {
   }
 
   const [scope, action, rawGoalId] = String(interaction.customId || '').split(':');
-  if (scope !== 'goal-modal' || action !== 'ask-orion') return;
+  if (scope !== 'goal-modal' || !['ask-orion', 'revise-plan'].includes(action)) return;
 
   const guild = interaction.guild;
   if (!guild) {
     await safeInitialReply(interaction, {
-      content: 'Ask Orion must be used in the SwiftPark Discord server.',
+      content: action === 'revise-plan'
+        ? 'Revise Plan must be used in the SwiftPark Discord server.'
+        : 'Ask Orion must be used in the SwiftPark Discord server.',
       ephemeral: true,
     });
     return;
@@ -5195,7 +5328,7 @@ async function handleModalSubmitInteraction(interaction: any): Promise<void> {
   const goal = rawGoalId ? await readGoalState(rawGoalId) : undefined;
   if (!goal) {
     await safeInitialReply(interaction, {
-      content: `Unknown goal for Ask Orion: \`${rawGoalId || '(missing)'}\`.`,
+      content: `Unknown goal for ${action === 'revise-plan' ? 'Revise Plan' : 'Ask Orion'}: \`${rawGoalId || '(missing)'}\`.`,
       ephemeral: true,
     });
     return;
@@ -5204,7 +5337,9 @@ async function handleModalSubmitInteraction(interaction: any): Promise<void> {
   const message = String(interaction.fields.getTextInputValue('orion-message') || '').trim();
   if (!message) {
     await safeInitialReply(interaction, {
-      content: 'Ask Orion needs a question or brainstorming note.',
+      content: action === 'revise-plan'
+        ? 'Revise Plan needs the feedback Orion should save into the plan.'
+        : 'Ask Orion needs a question or brainstorming note.',
       ephemeral: true,
     });
     return;
@@ -5213,7 +5348,7 @@ async function handleModalSubmitInteraction(interaction: any): Promise<void> {
   const forbidden = isForbiddenTask(message);
   if (forbidden) {
     await safeInitialReply(interaction, {
-      content: `Ask Orion blocked: ${forbidden}.`,
+      content: `${action === 'revise-plan' ? 'Revise Plan' : 'Ask Orion'} blocked: ${forbidden}.`,
       ephemeral: true,
     });
     return;
@@ -5221,6 +5356,30 @@ async function handleModalSubmitInteraction(interaction: any): Promise<void> {
 
   await interaction.deferReply({ ephemeral: true });
   const setup = await ensureChannels(guild);
+
+  if (action === 'revise-plan') {
+    await interaction.editReply(`Orion is revising the saved handoff for goal-${goal.id}.`);
+    const { goal: revisedGoal } = await reviseGoalPlan(
+      goal,
+      message,
+      'thread button',
+      setup.channels,
+      interaction.user.id,
+      'Revise Plan button'
+    );
+    await postAgentStatusBoard(setup.channels).catch(() => undefined);
+    await notifySubscribers(
+      setup.channels,
+      `Orion revised goal-${revisedGoal.id}. Approval needed: /approve target:${revisedGoal.planApprovalToken}`
+    ).catch(() => undefined);
+    await interaction.editReply(
+      revisedGoal.threadName
+        ? `Saved revision posted in thread \`${revisedGoal.threadName}\`.`
+        : 'Saved revision posted to #orion-planning.'
+    );
+    return;
+  }
+
   await interaction.editReply(`Orion is answering goal-${goal.id}. I will post the answer in the goal thread.`);
 
   const response = await runOrionChat(goal, message, setup.channels, interaction.user.id, 'Ask Orion button');
@@ -5263,6 +5422,23 @@ async function handleGoalButtonInteraction(interaction: any): Promise<void> {
       .setRequired(true)
       .setMaxLength(1800)
       .setPlaceholder('Ask Orion anything about this goal. This will not revise the saved plan.');
+
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === 'revise-plan') {
+    const modal = new ModalBuilder()
+      .setCustomId(`goal-modal:revise-plan:${goal.id}`)
+      .setTitle('Revise Plan');
+    const input = new TextInputBuilder()
+      .setCustomId('orion-message')
+      .setLabel('What should Orion save?')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(1800)
+      .setPlaceholder('Tell Orion exactly how to revise the saved handoff. This changes plan state and requires approval again.');
 
     modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
     await interaction.showModal(modal);

@@ -165,10 +165,14 @@ for (const snippet of [
   'postGoalControls',
   'goal:approve-run',
   'goal:ask-orion',
+  'goal:revise-plan',
   'goal-modal:ask-orion',
+  'goal-modal:revise-plan',
   'classifyGoalThreadMessage',
   'answerGoalThreadQuestion',
   'runOrionChat',
+  'thread-history.jsonl',
+  'reconcileStartupState',
   'resolveExecutionDecision',
   'planHoldsAgent',
   'resolveQaRoot',
@@ -234,7 +238,8 @@ const conversationalRevision = extractOrionPlan([
 assert(conversationalRevision.ok, '/revise-goal should accept conversational Orion Markdown');
 pass('/revise-goal conversational', 'natural Orion response accepted as saved handoff');
 assert(botSource.includes("return normalized.length >= 24 ? 'chat' : 'greeting'"), 'short thread messages should not be silently ignored');
-pass('conversational thread replies', 'non-command thread messages are answered instead of ignored');
+assert(botSource.includes('Saved plan unchanged'), 'revision-like thread chat should point to explicit revision controls');
+pass('conversational thread replies', 'non-command thread messages are answered instead of ignored and revision-like chat stays read-only');
 
 const revisedPlan = makePlan(true);
 assert(validateOrionPlan(revisedPlan), '/revise-goal revised plan should validate');
