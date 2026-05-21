@@ -114,7 +114,7 @@ Approve the plan:
 /approve target:plan-<goal_id>
 ```
 
-Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target. Orion plan posts also include buttons: **Approve + Run**, **Plan Only**, **Summary**, **Full Plan**, **Run Iris**, **Run Atlas**, **Run Sentinel**, and **Cancel**.
+Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target. Orion plan posts also include buttons: **Approve + Run**, **Plan Only**, **Ask Orion**, **Summary**, **Full Plan**, **Run Iris**, **Run Atlas**, **Run Sentinel**, and **Cancel**. **Ask Orion** opens a short modal and posts a read-only conversational answer in the goal thread without revising the saved plan.
 
 In `plan-only` mode, approval is recorded and the goal waits for an explicit agent button or `/run-agent`. In `execute-after-approval` mode, Orion picks the practical next agents from the current plan, honors “hold/not needed/read-only” language, and skips Sentinel when the QA target is not ready.
 

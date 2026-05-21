@@ -6,10 +6,13 @@ import {
   ChannelType,
   Client,
   GatewayIntentBits,
+  ModalBuilder,
   REST,
   Routes,
   SlashCommandBuilder,
   TextChannel,
+  TextInputBuilder,
+  TextInputStyle,
 } from 'discord.js';
 import { execa } from 'execa';
 import fg from 'fast-glob';
@@ -2271,9 +2274,13 @@ function goalActionRows(goal: GoalState): ActionRowBuilder<ButtonBuilder>[] {
         .setLabel('Plan Only')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
+        .setCustomId(`goal:ask-orion:${goal.id}`)
+        .setLabel('Ask Orion')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
         .setCustomId(`goal:plan-summary:${goal.id}`)
         .setLabel('Summary')
-        .setStyle(ButtonStyle.Primary),
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`goal:plan-full:${goal.id}`)
         .setLabel('Full Plan')
@@ -4992,6 +4999,11 @@ client.on('interactionCreate', async (interaction: any) => {
       return;
     }
 
+    if (interaction.isModalSubmit()) {
+      await handleModalSubmitInteraction(interaction);
+      return;
+    }
+
     if (interaction.isButton()) {
       await handleButtonInteraction(interaction);
     }
@@ -5109,6 +5121,67 @@ async function handleButtonInteraction(interaction: any): Promise<void> {
   });
 }
 
+async function handleModalSubmitInteraction(interaction: any): Promise<void> {
+  if (!allowedUsers.has(interaction.user.id)) {
+    await safeInitialReply(interaction, {
+      content: 'You are not authorized to use SwiftPark command-center modals.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const [scope, action, rawGoalId] = String(interaction.customId || '').split(':');
+  if (scope !== 'goal-modal' || action !== 'ask-orion') return;
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await safeInitialReply(interaction, {
+      content: 'Ask Orion must be used in the SwiftPark Discord server.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const goal = rawGoalId ? await readGoalState(rawGoalId) : undefined;
+  if (!goal) {
+    await safeInitialReply(interaction, {
+      content: `Unknown goal for Ask Orion: \`${rawGoalId || '(missing)'}\`.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const message = String(interaction.fields.getTextInputValue('orion-message') || '').trim();
+  if (!message) {
+    await safeInitialReply(interaction, {
+      content: 'Ask Orion needs a question or brainstorming note.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const forbidden = isForbiddenTask(message);
+  if (forbidden) {
+    await safeInitialReply(interaction, {
+      content: `Ask Orion blocked: ${forbidden}.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const setup = await ensureChannels(guild);
+  await interaction.editReply(`Orion is answering goal-${goal.id}. I will post the answer in the goal thread.`);
+
+  const response = await runOrionChat(goal, message, setup.channels, interaction.user.id, 'Ask Orion button');
+  await postOrionResponseToGoalThreadOrPlanning(setup.channels, goal, 'Orion Answer', response);
+  await interaction.editReply(
+    goal.threadName
+      ? `Orion answered in thread \`${goal.threadName}\`.`
+      : 'Orion answered in #orion-planning.'
+  );
+}
+
 async function handleGoalButtonInteraction(interaction: any): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
@@ -5126,6 +5199,23 @@ async function handleGoalButtonInteraction(interaction: any): Promise<void> {
       content: `Unknown goal for this button: \`${rawGoalId || '(missing)'}\`.`,
       ephemeral: true,
     });
+    return;
+  }
+
+  if (action === 'ask-orion') {
+    const modal = new ModalBuilder()
+      .setCustomId(`goal-modal:ask-orion:${goal.id}`)
+      .setTitle('Ask Orion');
+    const input = new TextInputBuilder()
+      .setCustomId('orion-message')
+      .setLabel('Question or brainstorm note')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(1800)
+      .setPlaceholder('Ask Orion anything about this goal. This will not revise the saved plan.');
+
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+    await interaction.showModal(modal);
     return;
   }
 

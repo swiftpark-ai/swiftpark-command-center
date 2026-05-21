@@ -174,6 +174,9 @@ assert(botSource.includes('runOrionChat'), 'goal thread Codex chat reply path mi
 assert(botSource.includes('hasSuccessfulImplementationJob'), 'agent approval guard missing');
 assert(botSource.includes('goalActionRows'), 'goal action buttons missing');
 assert(botSource.includes('goal:approve-run'), 'Approve + Run button missing');
+assert(botSource.includes('goal:ask-orion'), 'Ask Orion button missing');
+assert(botSource.includes('goal-modal:ask-orion'), 'Ask Orion modal missing');
+assert(botSource.includes('TextInputStyle.Paragraph'), 'Ask Orion modal text input missing');
 assert(botSource.includes('resolveExecutionDecision'), 'approve-and-run execution decision missing');
 assert(botSource.includes('planHoldsAgent'), 'agent hold/not-needed decision guard missing');
 assert(botSource.includes("'inspect-discord'"), 'read-only Discord inspection command missing');

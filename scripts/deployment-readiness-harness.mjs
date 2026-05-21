@@ -163,6 +163,8 @@ const botSource = await readFile(path.join(root, 'src', 'bot.ts'), 'utf8');
 for (const snippet of [
   'goalActionRows',
   'goal:approve-run',
+  'goal:ask-orion',
+  'goal-modal:ask-orion',
   'classifyGoalThreadMessage',
   'answerGoalThreadQuestion',
   'runOrionChat',
@@ -176,7 +178,7 @@ for (const snippet of [
 ]) {
   assert(botSource.includes(snippet), `bot source missing ${snippet}`);
 }
-pass('goal thread actions', 'buttons, classifier, and read-only Orion chat present');
+pass('goal thread actions', 'buttons, Ask Orion modal, classifier, and read-only Orion chat present');
 pass('/inspect-discord', 'read-only bot-visible message inspection writes local redacted reports');
 
 assert.deepEqual(agentDefinitions.map((agent) => agent.id), ['orion', 'iris', 'atlas', 'sentinel', 'scout', 'echo', 'pulse']);
