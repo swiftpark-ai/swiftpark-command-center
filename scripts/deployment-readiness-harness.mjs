@@ -137,10 +137,11 @@ await mkdir(goalDir, { recursive: true });
 const channelNames = new Set();
 function setup() {
   for (const channel of requiredChannelDefinitions) channelNames.add(channel.displayName);
+  const helpName = requiredChannelDefinitions.find((channel) => channel.id === 'help')?.displayName;
   return {
     requiredCount: requiredChannelDefinitions.length,
     channelCount: channelNames.size,
-    hasHelp: channelNames.has('help'),
+    hasHelp: Boolean(helpName && channelNames.has(helpName)),
     hasStatus: channelNames.has('agent-status'),
   };
 }

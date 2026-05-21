@@ -14,6 +14,9 @@ assert.deepEqual(agentDefinitions.map((agent) => agent.id), expectedAgentOrder, 
 const planningChannel = requiredChannelDefinitions.find((channel) => channel.id === 'pm-planning');
 assert.equal(planningChannel?.displayName, 'orion-planning', 'planning channel should be named for Orion');
 assert(planningChannel.aliases.includes('pm-planning'), 'old pm-planning name should remain an alias');
+const helpChannel = requiredChannelDefinitions.find((channel) => channel.id === 'help');
+assert.equal(helpChannel?.displayName, 'helppppppppppppppppppppppppppppppppppppp', 'joke help channel name should remain canonical');
+assert(helpChannel.aliases.includes('help'), 'plain help channel name should remain an alias');
 
 const helpSource = await readFile(path.join(root, 'src', 'help.ts'), 'utf8');
 for (const command of [

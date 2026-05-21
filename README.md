@@ -32,7 +32,7 @@ Discord command center bot for local SwiftPark agent workflows.
    /setup
    ```
 
-`/setup` creates missing command-center channels without duplicating existing channels, posts a created/existing summary, refreshes `#help`, and refreshes `#agent-status`. A successful setup message starts with `Echo finished command-center setup.`
+`/setup` creates missing command-center channels in the `Stress Less` category without duplicating existing channels, posts a created/existing summary, refreshes the help channel, and refreshes `#agent-status`. A successful setup message starts with `Echo finished command-center setup.`
 
 ## Agents
 
@@ -51,7 +51,7 @@ Neo is reserved for the future SwiftPark user-facing assistant. Do not use Neo a
 `/setup` manages these channels:
 
 - `agent-command`
-- `help`
+- `helppppppppppppppppppppppppppppppppppppp`
 - `orion-planning`
 - `agent-status`
 - `build-feed`

@@ -67,6 +67,7 @@ const githubIssuesEnabled = envFlag('GITHUB_ISSUES_ENABLED') || envFlag('COMMAND
 const githubStatusEnabled = envFlag('GITHUB_STATUS_ENABLED') || githubIssuesEnabled;
 const jiraEnabled = envFlag('JIRA_ENABLED');
 const manualLogPath = path.join(runsDir, 'manual-log.md');
+const commandCenterCategoryName = 'Stress Less';
 const logicalChannelNames = new Map(channelDefinitions.map((channel) => [channel.id, channel.displayName]));
 
 type QaMode = 'smoke' | 'screen' | 'full';
@@ -1082,13 +1083,13 @@ async function ensureChannels(guild: any): Promise<ChannelSetupResult> {
   await guild.channels.fetch().catch(() => undefined);
 
   let category = guild.channels.cache.find(
-    (c: any) => c.name === 'SwiftPark Agents' && c.type === ChannelType.GuildCategory
+    (c: any) => c.name === commandCenterCategoryName && c.type === ChannelType.GuildCategory
   );
   let categoryCreated = false;
 
   if (!category) {
     category = await guild.channels.create({
-      name: 'SwiftPark Agents',
+      name: commandCenterCategoryName,
       type: ChannelType.GuildCategory,
     });
     categoryCreated = true;
@@ -1113,7 +1114,7 @@ async function ensureChannels(guild: any): Promise<ChannelSetupResult> {
       });
       created.push(definition.displayName);
     } else if (channel) {
-      if (definition.id === 'pm-planning' && channel.name !== definition.displayName) {
+      if ((definition.id === 'pm-planning' || definition.id === 'help') && channel.name !== definition.displayName) {
         const canonicalExists = guild.channels.cache.find(
           (candidate: any) =>
             candidate.type === ChannelType.GuildText
@@ -1124,7 +1125,7 @@ async function ensureChannels(guild: any): Promise<ChannelSetupResult> {
           try {
             channel = await channel.setName(
               definition.displayName,
-              'SwiftPark Command Center rename: Orion owns planning output.'
+              `SwiftPark Command Center canonical channel name: ${definition.displayName}.`
             );
           } catch {
             // Keep using the existing alias if Discord permissions prevent a rename.
@@ -3286,7 +3287,9 @@ function stopTrackedGoalProcesses(goalId: string): string[] {
 function formatSetupSummary(result: ChannelSetupResult): string {
   return [
     '## Echo finished command-center setup.',
-    result.categoryCreated ? 'Category created: `SwiftPark Agents`' : 'Category already existed: `SwiftPark Agents`',
+    result.categoryCreated
+      ? `Category created: \`${commandCenterCategoryName}\``
+      : `Category already existed: \`${commandCenterCategoryName}\``,
     '',
     'Created channels:',
     result.created.length ? result.created.map((name) => `- #${name}`).join('\n') : '- none',

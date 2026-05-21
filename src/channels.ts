@@ -39,9 +39,9 @@ export const channelDefinitions: ChannelDefinition[] = [
   },
   {
     id: 'help',
-    displayName: 'help',
+    displayName: 'helppppppppppppppppppppppppppppppppppppp',
     purpose: 'Onboarding, command directory, example workflows, approval rules, and notification instructions.',
-    aliases: ['help', 'command-help', 'commands-help', 'start-here'],
+    aliases: ['help', 'helppppppppppppppppppppppppppppppppppppp', 'command-help', 'commands-help', 'start-here'],
     required: true,
     primaryAgent: 'echo',
   },
