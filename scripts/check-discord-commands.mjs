@@ -25,6 +25,7 @@ const expectedCommands = [
   'active-runs',
   'cancel-goal',
   'cancel',
+  'clear-blocker',
   'revise-goal',
   'approve',
   'reject',

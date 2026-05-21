@@ -42,6 +42,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '- `/runs` / `/active-runs`: list recent, active, stale, failed, and approved goal runs.',
     '- `/cancel-goal`: cancel a goal and stop tracked local subprocesses when possible.',
     '- `/cancel`: short alias for `/cancel-goal`.',
+    '- `/clear-blocker`: clear a stale non-running blocker after human review.',
     '- `/revise-goal`: ask Orion to revise a plan from feedback.',
     '- `/approve`: approve `plan-<goal_id>`, `agent-<goal_id>`, or `qa-<goal_id>`.',
     '- `/reject`: reject a plan, agent run, QA result, issue, PR, or branch with a reason.',
@@ -73,7 +74,8 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '10. Review screenshots in #sentinel-qa.',
     '11. `/approve target:qa-<id>` or `/reject reason:"..." target:qa-<id>`',
     '12. `/cancel reason:"No longer needed"` in the thread if the run should stop.',
-    '13. `/decision summary:"Ship the phone-friendly planning flow for review" rationale:"Smoke checks passed; human Discord review remains." goal_id:<id>`',
+    '13. Use `/clear-blocker reason:"Old Sentinel QA root error reviewed"` only when a stale failed status should stop blocking discussion.',
+    '14. `/decision summary:"Ship the phone-friendly planning flow for review" rationale:"Smoke checks passed; human Discord review remains." goal_id:<id>`',
     '',
     '## Approval Rules',
     '- Orion can plan or revise without implementation approval.',
@@ -87,6 +89,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '',
     '## Screenshots',
     'Sentinel posts visual QA screenshots in #sentinel-qa. Screen mode posts only mobile + desktop for the selected screen. Smoke mode posts a small core set. Full mode posts all available screenshots, capped.',
+    'Sentinel resolves the QA package root before running. If no package with the required QA script exists, it skips with a clear setup message instead of raw npm noise.',
     'Example: `/test mode:screen screen:brighton-spot-map label:"Brighton map mobile check"`',
   ].join('\n');
 
@@ -128,6 +131,7 @@ export function buildCommandDirectory(): string {
     '- `/active-runs limit:<optional number>`',
     '- `/cancel-goal goal_id:<optional id> reason:<optional text>`',
     '- `/cancel goal_id:<optional id> reason:<optional text>`',
+    '- `/clear-blocker goal_id:<optional id> reason:<optional text>`',
     '- `/revise-goal feedback:<text> target:<plan|iris|atlas|sentinel|general> goal_id:<optional id>`',
     '- `/approve target:<optional plan-id|agent-id|qa-id>`',
     '- `/reject reason:<text> target:<optional id>`',

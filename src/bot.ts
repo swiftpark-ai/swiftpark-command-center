@@ -54,6 +54,7 @@ const allowedUsers = new Set(
 );
 
 const qaCommand = process.env.QA_COMMAND || 'npm run qa';
+const qaRootOverride = process.env.QA_ROOT || process.env.QA_WORKDIR || '';
 const commandTimeoutMs = envMs('COMMAND_TIMEOUT_MS', 0);
 const maxScreenshotUploads = Number(process.env.QA_MAX_SCREENSHOT_UPLOADS || 30);
 const defaultScreenshotUploadCap = Number(process.env.QA_DEFAULT_SCREENSHOT_UPLOAD_CAP || 6);
@@ -112,6 +113,7 @@ type QaRunSummary = {
   label: string;
   mode: QaMode;
   screens: string[];
+  qaRoot: string;
   uploaded: number;
   selected: number;
   available: number;
@@ -229,6 +231,14 @@ type QaTaskParseResult = {
   mode: QaMode;
   screen: typeof qaScreenNames[number] | null;
   unsupportedTarget?: QaUnsupportedTarget;
+};
+
+type QaRootResolution = {
+  ok: boolean;
+  root: string;
+  reason?: string;
+  candidates: string[];
+  requiredScript?: string;
 };
 
 type ImplementationAgentId = 'iris' | 'atlas';
@@ -679,6 +689,107 @@ function buildQaScript(selection: ReturnType<typeof getQaSelection>): string {
   return `${qaCommand} -- --grep ${quoteForShell(grep)}`;
 }
 
+function requiredPackageScriptForQaCommand(script: string): string | undefined {
+  const match = script.match(/\b(?:npm|pnpm|bun)\s+run\s+([A-Za-z0-9:_-]+)/)
+    || script.match(/\byarn\s+run\s+([A-Za-z0-9:_-]+)/);
+  if (match?.[1]) return match[1];
+
+  const yarnShortcut = script.match(/^\s*yarn\s+([A-Za-z0-9:_-]+)\b/);
+  if (yarnShortcut?.[1] && !['add', 'install', 'remove', 'upgrade', 'dlx'].includes(yarnShortcut[1])) {
+    return yarnShortcut[1];
+  }
+
+  return undefined;
+}
+
+async function packageJsonSupportsQa(packageJsonPath: string, requiredScript?: string): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(packageJsonPath, 'utf8')) as { scripts?: Record<string, string> };
+    if (!requiredScript) return true;
+    return Boolean(parsed.scripts?.[requiredScript]);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveQaRoot(root: string): Promise<QaRootResolution> {
+  const requiredScript = requiredPackageScriptForQaCommand(qaCommand);
+  const candidates: string[] = [];
+
+  const evaluatePackage = async (packageJsonPath: string): Promise<string | undefined> => {
+    const directory = path.dirname(packageJsonPath);
+    try {
+      await fs.access(packageJsonPath);
+    } catch {
+      return undefined;
+    }
+    candidates.push(directory);
+    return (await packageJsonSupportsQa(packageJsonPath, requiredScript)) ? directory : undefined;
+  };
+
+  if (qaRootOverride.trim()) {
+    const configuredRoot = path.isAbsolute(qaRootOverride)
+      ? qaRootOverride
+      : path.join(root, qaRootOverride);
+    const configuredPackage = path.join(configuredRoot, 'package.json');
+    candidates.push(configuredRoot);
+
+    if (await packageJsonSupportsQa(configuredPackage, requiredScript)) {
+      return { ok: true, root: configuredRoot, candidates, requiredScript };
+    }
+
+    return {
+      ok: false,
+      root: configuredRoot,
+      requiredScript,
+      candidates,
+      reason: requiredScript
+        ? `Configured QA root \`${configuredRoot}\` does not contain package.json with script \`${requiredScript}\`.`
+        : `Configured QA root \`${configuredRoot}\` does not contain a readable package.json.`,
+    };
+  }
+
+  const rootPackage = await evaluatePackage(path.join(root, 'package.json'));
+  if (rootPackage) return { ok: true, root: rootPackage, candidates, requiredScript };
+
+  const packageJsons = await fg(
+    ['package.json', '*/package.json', '*/*/package.json', '*/*/*/package.json'],
+    {
+      cwd: root,
+      absolute: true,
+      onlyFiles: true,
+      dot: false,
+      ignore: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/playwright-report/**',
+        '**/test-results/**',
+      ],
+    }
+  ).catch(() => []);
+
+  for (const packageJsonPath of packageJsons.sort()) {
+    if (path.resolve(packageJsonPath) === path.resolve(root, 'package.json')) continue;
+    const supported = await evaluatePackage(packageJsonPath);
+    if (supported) return { ok: true, root: supported, candidates, requiredScript };
+  }
+
+  const uniqueCandidates = [...new Set(candidates)];
+  return {
+    ok: false,
+    root,
+    candidates: uniqueCandidates,
+    requiredScript,
+    reason: uniqueCandidates.length === 0
+      ? `No package.json found under \`${root}\`, so Sentinel cannot run \`${qaCommand}\`.`
+      : requiredScript
+        ? `Found package.json candidate(s), but none define script \`${requiredScript}\` required by \`${qaCommand}\`.`
+        : `Found package.json candidate(s), but Sentinel could not choose a safe QA root for \`${qaCommand}\`.`,
+  };
+}
+
 function summarizeQaOutput(output: string): string {
   const safeOutput = stripAnsi(redactSensitive(output));
   const summaryLine = safeOutput
@@ -1122,6 +1233,23 @@ async function registerCommands() {
         option
           .setName('reason')
           .setDescription('Optional cancellation reason')
+          .setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName('clear-blocker')
+      .setDescription('Clear a stale non-running goal blocker after human review')
+      .addStringOption((option) =>
+        option
+          .setName('goal_id')
+          .setDescription('Goal id from /goal; optional inside a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
+      )
+      .addStringOption((option) =>
+        option
+          .setName('reason')
+          .setDescription('Why the blocker is safe to clear')
           .setRequired(false)
       ),
 
@@ -3372,15 +3500,73 @@ async function runQaFlow(
   selection: ReturnType<typeof getQaSelection>,
   options: ShellOptions = {}
 ): Promise<ShellResult & { uploadSummary: string; qa: QaRunSummary }> {
-  await cleanQaArtifacts(root);
+  const qaRoot = await resolveQaRoot(root);
+  const displayQaRoot = qaRoot.ok ? qaRoot.root : root;
+  const candidateLines = qaRoot.candidates.length
+    ? qaRoot.candidates.slice(0, 8).map((candidate) => `- \`${candidate}\``)
+    : ['- none'];
+
+  if (!qaRoot.ok) {
+    const warning = qaRoot.reason || `Could not resolve a QA root for \`${qaCommand}\`.`;
+    const output = [
+      'Status: SKIPPED (Sentinel)',
+      `Label: ${label}`,
+      `Mode: ${selection.mode}`,
+      `Screen(s): ${selection.screens.join(', ') || '(none)'}`,
+      `Requested root: \`${root}\``,
+      `Required script: ${qaRoot.requiredScript ? `\`${qaRoot.requiredScript}\`` : '(not inferred)'}`,
+      `Reason: ${warning}`,
+      'Package candidates checked:',
+      ...candidateLines,
+      'Next action: set `QA_ROOT`/`QA_WORKDIR` to the package that owns visual QA, add the required QA script, or register a supported dashboard QA target before rerunning Sentinel.',
+    ].join('\n');
+
+    await channel.send([
+      '# QA Result: SKIPPED',
+      `Label: **${label}**`,
+      `Mode: \`${selection.mode}\``,
+      `Screens selected: ${selection.screens.join(', ') || '(none)'}`,
+      `Requested root: \`${root}\``,
+      `Reason: ${warning}`,
+      `Candidates checked: ${qaRoot.candidates.length}`,
+    ].join('\n')).catch(() => {});
+
+    if (qaRoot.candidates.length > 0) {
+      await postArtifactPaths(channel, 'QA package candidates checked', qaRoot.candidates, root).catch(() => undefined);
+    }
+
+    return {
+      ok: true,
+      skipped: true,
+      output,
+      uploadSummary: 'Screenshots uploaded: 0/0',
+      qa: {
+        status: 'SKIPPED',
+        label,
+        mode: selection.mode,
+        screens: selection.screens,
+        qaRoot: displayQaRoot,
+        uploaded: 0,
+        selected: 0,
+        available: 0,
+        skipped: 0,
+        warnings: [warning],
+        localScreenshots: '(not run)',
+        localReport: '(not run)',
+        playwrightSummary: 'Sentinel did not run Playwright because no safe QA package root was found.',
+      },
+    };
+  }
+
+  await cleanQaArtifacts(qaRoot.root);
   const script = buildQaScript(selection);
-  const result = await shellScript(script, root, {
+  const result = await shellScript(script, qaRoot.root, {
     timeoutMs: options.timeoutMs ?? sentinelMaxRuntimeMs,
     activeKey: options.activeKey,
     goalId: options.goalId,
     agent: options.agent,
   });
-  const uploadResult = await postQaScreenshots(channel, label, selection, root);
+  const uploadResult = await postQaScreenshots(channel, label, selection, qaRoot.root);
   const status = result.ok ? 'PASS' : 'FAIL';
 
   await channel.send(
@@ -3389,10 +3575,11 @@ async function runQaFlow(
       `Label: **${label}**`,
       `Mode: \`${selection.mode}\``,
       `Screens selected: ${selection.screens.join(', ') || '(none)'}`,
+      `QA root: \`${path.relative(root, qaRoot.root) || '.'}\``,
       `Playwright: ${summarizeQaOutput(result.output)}`,
       `Screenshots uploaded: ${uploadResult.uploaded}/${uploadResult.selected}`,
-      `Local screenshots: \`${path.relative(root, path.join(root, 'test-results/manual-screenshots'))}\``,
-      `Local report: \`${path.relative(root, path.join(root, 'playwright-report/index.html'))}\``,
+      `Local screenshots: \`${path.relative(root, path.join(qaRoot.root, 'test-results/manual-screenshots'))}\``,
+      `Local report: \`${path.relative(root, path.join(qaRoot.root, 'playwright-report/index.html'))}\``,
     ].join('\n')
   ).catch(() => {});
 
@@ -3409,9 +3596,9 @@ async function runQaFlow(
   if (!result.ok) {
     await postTerminalOutput(channel, 'Terminal output', result.output).catch(() => {});
 
-    const diagnostics = await findQaDiagnostics(root).catch(() => []);
+    const diagnostics = await findQaDiagnostics(qaRoot.root).catch(() => []);
     if (diagnostics.length > 0) {
-      await postArtifactPaths(channel, 'QA video/error paths', diagnostics, root).catch(() => {});
+      await postArtifactPaths(channel, 'QA video/error paths', diagnostics, qaRoot.root).catch(() => {});
     }
   }
 
@@ -3423,13 +3610,14 @@ async function runQaFlow(
       label,
       mode: selection.mode,
       screens: selection.screens,
+      qaRoot: qaRoot.root,
       uploaded: uploadResult.uploaded,
       selected: uploadResult.selected,
       available: uploadResult.available,
       skipped: uploadResult.skipped,
       warnings: uploadResult.warnings,
-      localScreenshots: path.relative(root, path.join(root, 'test-results/manual-screenshots')),
-      localReport: path.relative(root, path.join(root, 'playwright-report/index.html')),
+      localScreenshots: path.relative(root, path.join(qaRoot.root, 'test-results/manual-screenshots')),
+      localReport: path.relative(root, path.join(qaRoot.root, 'playwright-report/index.html')),
       playwrightSummary: summarizeQaOutput(result.output),
     },
   };
@@ -3447,6 +3635,7 @@ function formatSentinelSummary(goal: GoalState, qa: QaRunSummary): string {
     `Goal: goal-${goal.id}`,
     `Mode: ${qa.mode}`,
     `Screen(s): ${qa.screens.join(', ') || '(none)'}`,
+    `QA root: \`${qa.qaRoot}\``,
     `Playwright: ${qa.playwrightSummary}`,
     `Screenshots posted: ${qa.uploaded}/${qa.selected}`,
     `Screenshots available: ${qa.available}`,
@@ -3502,6 +3691,7 @@ async function runSentinelAgent(
   });
   return {
     ok: result.ok,
+    skipped: result.skipped,
     output: formatSentinelSummary(goal, result.qa),
   };
 }
@@ -4017,6 +4207,7 @@ async function formatGoalStatus(goal: GoalState): Promise<string> {
   const elapsed = goal.startedAt ? formatMs(elapsedMs(goal.startedAt, goal.endedAt)) : formatElapsed(goal.createdAt, goal.endedAt);
   const stale = goal.status === 'planning' && elapsedMs(goal.startedAt || goal.updatedAt) > orionStaleAfterMs;
   const agentApprovalWithoutWork = goal.status === 'agent-approved' && !hasSuccessfulImplementationJob(goal);
+  const sentinelBlocked = goal.status === 'blocked' && (goal.currentAgent === 'sentinel' || /\bSentinel\b/i.test(goal.currentStep || goal.lastError || ''));
 
   return [
     `## Goal Status: goal-${goal.id}`,
@@ -4027,7 +4218,8 @@ async function formatGoalStatus(goal: GoalState): Promise<string> {
     `Worktree: \`${goal.worktreePath}\``,
     `Plan file exists: ${planExists ? 'yes' : 'no'}`,
     `Last error: ${goal.lastError ? truncate(goal.lastError, 700) : 'none'}`,
-    `Next action: ${agentApprovalWithoutWork ? 'Use Approve + Run, Run Iris/Atlas, or revise the plan before QA.' : goal.nextAction || defaultNextAction(goal)}`,
+    sentinelBlocked ? 'Blocker note: this is a Sentinel/QA blocker, not an Orion planning failure.' : '',
+    `Next action: ${agentApprovalWithoutWork ? 'Use Approve + Run, Run Iris/Atlas, or revise the plan before QA.' : sentinelBlocked ? `Fix/rerun Sentinel, cancel the old goal, or clear the stale blocker with /clear-blocker goal_id:${goal.id}.` : goal.nextAction || defaultNextAction(goal)}`,
   ].join('\n');
 }
 
@@ -4526,6 +4718,58 @@ async function cancelGoalRun(
   await postAgentStatusBoard(channels).catch(() => undefined);
 
   return { updated, stopped };
+}
+
+async function clearGoalBlocker(
+  goal: GoalState,
+  reason: string,
+  channels: Record<string, TextChannel>,
+  userId: string
+): Promise<{ updated?: GoalState; message: string }> {
+  const runningJob = goal.jobs.find((job) => job.status === 'running');
+  if (runningJob) {
+    return {
+      message: `Refusing to clear blocker for goal-${goal.id}: ${runningJob.agent} is still running.`,
+    };
+  }
+
+  if (!goal.lastError && goal.status !== 'blocked' && goal.status !== 'timed-out') {
+    return {
+      message: `goal-${goal.id} does not have a blocker to clear. Current status: \`${goal.status}\`.`,
+    };
+  }
+
+  const updated = await updateGoalState(goal.id, (current) => {
+    current.status = current.approvals.plan ? 'plan-approved' : 'waiting-for-plan-approval';
+    current.currentStep = 'Blocker cleared after human review';
+    current.currentAgent = undefined;
+    current.lastError = undefined;
+    current.nextAction = current.approvals.plan
+      ? 'Blocker cleared. Use the thread buttons or /run-agent when ready.'
+      : `Blocker cleared. Approve the plan with /approve target:${current.planApprovalToken}.`;
+  });
+
+  await channels['logs'].send(
+    [
+      `Goal blocker cleared: \`goal-${updated.id}\``,
+      `By: <@${userId}>`,
+      `Reason: ${redactSensitive(reason)}`,
+      `Status: \`${updated.status}\``,
+      `Next: ${updated.nextAction}`,
+    ].join('\n')
+  ).catch(() => undefined);
+  await channels['build-feed'].send(`goal-${updated.id} blocker cleared. Status: \`${updated.status}\`.`).catch(() => undefined);
+  await postToGoalThread(updated, `Blocker cleared by <@${userId}>. ${updated.nextAction}`).catch(() => undefined);
+  await postAgentStatusBoard(channels).catch(() => undefined);
+
+  return {
+    updated,
+    message: [
+      `Cleared blocker for goal-${updated.id}.`,
+      `Status: \`${updated.status}\``,
+      `Next: ${updated.nextAction}`,
+    ].join('\n'),
+  };
 }
 
 function formatSetupSummary(result: ChannelSetupResult): string {
@@ -5071,7 +5315,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       agent: 'sentinel',
     });
     await setAgentFinished('sentinel', result.ok, result.output).catch(() => undefined);
-    const status = result.ok ? 'PASS' : 'FAIL';
+    const status = result.qa.status;
     const uploadSuffix = result.uploadSummary ? ` ${result.uploadSummary}.` : '';
     await interaction.editReply(`Visual QA complete: **${status}**. Mode: \`${mode}\`. See #sentinel-qa.${uploadSuffix}`);
     return;
@@ -5368,6 +5612,22 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
         stopped.length ? `Stopped tracked subprocesses: ${stopped.join(', ')}` : 'No tracked live subprocess was found. If an older process survived a bot restart, stop it from the terminal.',
       ].join('\n')
     );
+    return;
+  }
+
+  if (interaction.commandName === 'clear-blocker') {
+    const requestedGoalId = interaction.options.getString('goal_id') || undefined;
+    const reason = interaction.options.getString('reason') || 'Cleared after human review.';
+    const resolved = await resolveGoalForInteraction(interaction, requestedGoalId);
+    const goal = resolved.goal;
+
+    if (!goal) {
+      await interaction.editReply(resolved.message || 'No goal records found yet.');
+      return;
+    }
+
+    const result = await clearGoalBlocker(goal, reason, channels, interaction.user.id);
+    await interaction.editReply(result.message);
     return;
   }
 

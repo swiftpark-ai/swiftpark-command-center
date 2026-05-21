@@ -56,6 +56,7 @@ for (const command of [
   '/pulse-checkin',
   '/daily-brief',
   '/cancel',
+  '/clear-blocker',
   '/github-status',
   '/jira-status',
   '/log-change',
@@ -198,6 +199,9 @@ assert(botSource.includes('selectedSet'), 'QA screenshot de-duplication guard mi
 assert(botSource.includes('QA result remains **${status}**'), 'QA upload warning should preserve PASS/FAIL status');
 assert(botSource.includes('qaUnsupportedTargets'), 'unsupported QA target registry missing');
 assert(botSource.includes('formatSentinelSkippedSummary'), 'Sentinel skipped-target summary missing');
+assert(botSource.includes('resolveQaRoot'), 'Sentinel QA root resolver missing');
+assert(botSource.includes('QA_ROOT'), 'Sentinel QA root override env support missing');
+assert(botSource.includes('clearGoalBlocker'), 'stale blocker cleanup path missing');
 assert(botSource.includes('postLongAgentText'), 'long Iris/Atlas output posting helper missing');
 assert(!/console\.log\([^)]*process\.env/i.test(botSource), 'source must not log process.env');
 

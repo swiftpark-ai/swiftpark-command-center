@@ -159,6 +159,7 @@ Inspect or cancel goal runs:
 /active-runs limit:<optional>
 /cancel-goal goal_id:<optional> reason:<optional>
 /cancel goal_id:<optional> reason:<optional>
+/clear-blocker goal_id:<optional> reason:<optional>
 /github-status
 /jira-status
 /log-change summary:<text> goal_id:<optional>
@@ -166,7 +167,7 @@ Inspect or cancel goal runs:
 /inspect-discord source:<current-thread|orion-planning|iris-frontend|atlas-backend|sentinel-qa|echo-status|echo-logs|build-feed> goal_id:<optional> limit:<optional>
 ```
 
-`/plan`, `/goal-status`, `/cancel-goal`, `/cancel`, `/run-agent`, `/revise-goal`, `/approve`, and `/reject` infer the goal automatically when used inside a goal thread. Outside a thread, goal/target fields use Discord autocomplete for recent goals. `/plan` shows either a concise phone summary or the complete saved `plan.md` in clean Discord chunks. Orion's initial plan post uses the same full chunking path, so long plans should split across messages instead of dropping sections. `/goal-status` shows status, current step, agent, elapsed time, worktree path, whether `plan.md` exists, last error, and next expected action. `/runs` and `/active-runs` list recent, running, stale, failed, and approved goals. `/cancel-goal` and `/cancel` mark the goal canceled and stop tracked local subprocesses when possible. `/inspect-discord` is read-only bot-token inspection; it writes a local redacted report under `runs/discord-inspections/` and never uses a user token or self-bot. If an older subprocess survived a bot restart, stop it from the terminal and keep the run files for audit.
+`/plan`, `/goal-status`, `/cancel-goal`, `/cancel`, `/clear-blocker`, `/run-agent`, `/revise-goal`, `/approve`, and `/reject` infer the goal automatically when used inside a goal thread. Outside a thread, goal/target fields use Discord autocomplete for recent goals. `/plan` shows either a concise phone summary or the complete saved `plan.md` in clean Discord chunks. Orion's initial plan post uses the same full chunking path, so long plans should split across messages instead of dropping sections. `/goal-status` shows status, current step, agent, elapsed time, worktree path, whether `plan.md` exists, last error, and next expected action. `/runs` and `/active-runs` list recent, running, stale, failed, and approved goals. `/cancel-goal` and `/cancel` mark the goal canceled and stop tracked local subprocesses when possible. `/clear-blocker` clears a stale non-running blocker after human review, returning an approved goal to `plan-approved` without rerunning agents. `/inspect-discord` is read-only bot-token inspection; it writes a local redacted report under `runs/discord-inspections/` and never uses a user token or self-bot. If an older subprocess survived a bot restart, stop it from the terminal and keep the run files for audit.
 
 ## Help And Revisions
 
@@ -252,6 +253,7 @@ Manual log:
 - `smoke`: posts the Brighton facility and Brighton spot-map core set.
 - `full`: posts all available manual screenshots, capped by `QA_MAX_SCREENSHOT_UPLOADS`.
 - Unsupported targets such as “dashboard” are skipped with a clear Sentinel message until a Playwright QA screen/route is registered. A skipped unsupported target is not reported as a Playwright failure.
+- Sentinel resolves a QA package root before running. If the repo/worktree root has no `package.json`, it searches nearby package roots. If none define the script required by `QA_COMMAND`, Sentinel skips with the checked candidates and setup guidance instead of posting raw `npm ENOENT`.
 
 Standalone QA:
 

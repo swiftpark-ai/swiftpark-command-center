@@ -168,6 +168,8 @@ for (const snippet of [
   'runOrionChat',
   'resolveExecutionDecision',
   'planHoldsAgent',
+  'resolveQaRoot',
+  'clearGoalBlocker',
   'postLongAgentText',
   "'inspect-discord'",
   'discord-inspections',
@@ -251,6 +253,7 @@ for (const field of ['id', 'status', 'currentStep', 'currentAgent', 'elapsedMs',
 }
 pass('/goal-status', 'required fields present');
 pass('/runs', 'simulated run appears in local harness run list');
+pass('/clear-blocker', 'stale blocker cleanup source path is present and approval-gated by command use');
 
 const files = fakeScreenshots();
 const screenSelection = qaSelection('screen', 'brighton-spot-map');
@@ -266,6 +269,8 @@ assert.equal(smokeFiles.length, 4, 'smoke mode should post two screens across tw
 assert(fullFiles.length <= 6, 'full mode should respect cap');
 assert(botSource.includes('qaUnsupportedTargets'), 'unsupported QA target registry missing');
 assert(botSource.includes('Status: SKIPPED (Sentinel)'), 'Sentinel skipped target summary missing');
+assert(botSource.includes('Found package.json candidate(s), but none define script'), 'QA root missing-script guidance missing');
+assert(botSource.includes('QA package candidates checked'), 'QA candidate reporting missing');
 pass('/run-agent sentinel', 'targeted brighton-spot-map QA selects exactly mobile + desktop');
 pass('/test screen/smoke/full', `screen=${screenFiles.length}, smoke=${smokeFiles.length}, full capped=${fullFiles.length}`);
 pass('unsupported dashboard QA', 'dashboard targets skip with guidance until a Playwright screen is registered');
