@@ -40,10 +40,17 @@ export function extractOrionPlan(rawOutput: string): OrionPlanExtraction {
   }
 
   const fallback = trimCliNoise(normalized);
+  if (fallback.trim()) {
+    return {
+      ok: true,
+      plan: fallback.trim(),
+    };
+  }
+
   return {
     ok: false,
     plan: fallback.trim(),
-    reason: 'Codex output did not contain all required Orion plan sections.',
+    reason: 'Codex output was empty after CLI noise was removed.',
   };
 }
 

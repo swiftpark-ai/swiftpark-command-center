@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { agentDefinitions } from '../src/agents.ts';
 import { requiredChannelDefinitions } from '../src/channels.ts';
-import { formatPlanForDiscord, validateOrionPlan } from '../src/plans.ts';
+import { extractOrionPlan, formatPlanForDiscord, validateOrionPlan } from '../src/plans.ts';
 
 const root = process.cwd();
 const harnessRoot = path.join(root, 'runs', 'deployment-readiness-harness');
@@ -198,6 +198,16 @@ assert(!summaryChunks.join('\n').includes('No backend work expected'));
 assert(fullChunks.join('\n').includes('Backend Tasks for Atlas'));
 pass('/plan summary', `${summaryChunks.length} summary chunk(s), empty/unused sections hidden`);
 pass('/plan full', `${fullChunks.length} full chunk(s), complete plan retained`);
+
+const conversationalRevision = extractOrionPlan([
+  'Yep, I would narrow this to Iris and Sentinel.',
+  '',
+  '## Execution Handoff',
+  '- Scope: selected spot state and mobile bottom sheet clarity.',
+  '- QA: brighton-spot-map mobile + desktop only.',
+].join('\n'));
+assert(conversationalRevision.ok, '/revise-goal should accept conversational Orion Markdown');
+pass('/revise-goal conversational', 'natural Orion response accepted as saved handoff');
 
 const revisedPlan = makePlan(true);
 assert(validateOrionPlan(revisedPlan), '/revise-goal revised plan should validate');

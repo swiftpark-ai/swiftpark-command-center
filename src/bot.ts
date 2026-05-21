@@ -77,6 +77,7 @@ const pulseStatePath = path.join(runsDir, 'pulse-state.json');
 const pulseTimeZone = process.env.PULSE_TIME_ZONE || 'America/Los_Angeles';
 const pulseGymPromptHour = Math.min(Math.max(Number(process.env.PULSE_GYM_PROMPT_HOUR || 12), 0), 23);
 const pulseGymPromptMinute = Math.min(Math.max(Number(process.env.PULSE_GYM_PROMPT_MINUTE || 0), 0), 59);
+const orionThreadRepliesEnabled = envFlag('ORION_THREAD_REPLIES_ENABLED');
 
 type QaMode = 'smoke' | 'screen' | 'full';
 type GoalMode = 'plan-only' | 'execute-after-approval';
@@ -188,6 +189,7 @@ type GoalState = {
   worktreeWarning?: string;
   threadId?: string;
   threadName?: string;
+  lastOrionResponsePath?: string;
   planApprovalToken: string;
   qaApprovalToken: string;
   agentApprovalToken: string;
@@ -831,12 +833,6 @@ async function registerCommands() {
       .setDescription('Run one approved SwiftPark command-center agent')
       .addStringOption((option) =>
         option
-          .setName('goal_id')
-          .setDescription('Goal id from /goal')
-          .setRequired(true)
-      )
-      .addStringOption((option) =>
-        option
           .setName('agent')
           .setDescription('Agent to run')
           .setRequired(true)
@@ -847,6 +843,13 @@ async function registerCommands() {
             { name: 'sentinel', value: 'sentinel' },
             { name: 'scout', value: 'scout' }
           )
+      )
+      .addStringOption((option) =>
+        option
+          .setName('goal_id')
+          .setDescription('Goal id from /goal; optional inside a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       )
       .addStringOption((option) =>
         option
@@ -930,6 +933,7 @@ async function registerCommands() {
           .setName('goal_id')
           .setDescription('Optional goal id from /goal')
           .setRequired(false)
+          .setAutocomplete(true)
       ),
 
     new SlashCommandBuilder()
@@ -938,8 +942,9 @@ async function registerCommands() {
       .addStringOption((option) =>
         option
           .setName('goal_id')
-          .setDescription('Goal id from /goal')
-          .setRequired(true)
+          .setDescription('Goal id from /goal; optional inside a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       )
       .addStringOption((option) =>
         option
@@ -982,8 +987,9 @@ async function registerCommands() {
       .addStringOption((option) =>
         option
           .setName('goal_id')
-          .setDescription('Goal id from /goal')
-          .setRequired(true)
+          .setDescription('Goal id from /goal; optional inside a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       )
       .addStringOption((option) =>
         option
@@ -998,8 +1004,9 @@ async function registerCommands() {
       .addStringOption((option) =>
         option
           .setName('goal_id')
-          .setDescription('Goal id from /goal')
-          .setRequired(true)
+          .setDescription('Goal id from /goal; optional inside a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       )
       .addStringOption((option) =>
         option
@@ -1011,12 +1018,6 @@ async function registerCommands() {
     new SlashCommandBuilder()
       .setName('revise-goal')
       .setDescription('Ask Orion to revise a goal plan from feedback')
-      .addStringOption((option) =>
-        option
-          .setName('goal_id')
-          .setDescription('Goal id from /goal')
-          .setRequired(true)
-      )
       .addStringOption((option) =>
         option
           .setName('feedback')
@@ -1035,6 +1036,13 @@ async function registerCommands() {
             { name: 'atlas', value: 'atlas' },
             { name: 'sentinel', value: 'sentinel' }
           )
+      )
+      .addStringOption((option) =>
+        option
+          .setName('goal_id')
+          .setDescription('Goal id from /goal; optional inside a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       ),
 
     new SlashCommandBuilder()
@@ -1043,8 +1051,9 @@ async function registerCommands() {
       .addStringOption((option) =>
         option
           .setName('target')
-          .setDescription('plan-<goal_id>, qa-<goal_id>, agent-<goal_id>, PR, issue, or branch')
-          .setRequired(true)
+          .setDescription('plan-<goal_id>, qa-<goal_id>, agent-<goal_id>, PR, issue, or branch; optional in a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       ),
 
     new SlashCommandBuilder()
@@ -1052,15 +1061,16 @@ async function registerCommands() {
       .setDescription('Record rejection/change request for a goal, plan, QA, PR, or issue')
       .addStringOption((option) =>
         option
-          .setName('target')
-          .setDescription('Plan token, QA token, PR number, issue number, or branch')
+          .setName('reason')
+          .setDescription('What needs to change')
           .setRequired(true)
       )
       .addStringOption((option) =>
         option
-          .setName('reason')
-          .setDescription('What needs to change')
-          .setRequired(true)
+          .setName('target')
+          .setDescription('Plan token, QA token, PR number, issue number, or branch; optional in a goal thread')
+          .setRequired(false)
+          .setAutocomplete(true)
       ),
 
     new SlashCommandBuilder()
@@ -1802,6 +1812,7 @@ async function writeGoalState(goal: GoalState, plan?: string): Promise<GoalState
         worktreePath: goal.worktreePath,
         threadId: goal.threadId,
         threadName: goal.threadName,
+        lastOrionResponsePath: goal.lastOrionResponsePath,
         startedAt: goal.startedAt,
         endedAt: goal.endedAt,
         elapsedMs: goal.elapsedMs,
@@ -1900,6 +1911,89 @@ async function listGoalStates(): Promise<GoalState[]> {
   } catch {
     return [];
   }
+}
+
+function goalDisplayLabel(goal: GoalState): string {
+  const label = [
+    `goal-${goal.id}`,
+    goal.description.replace(/\s+/g, ' ').slice(0, 48),
+    goal.status,
+  ].filter(Boolean).join(' | ');
+
+  return label.length > 100 ? `${label.slice(0, 97)}...` : label;
+}
+
+async function goalForThreadId(channelId?: string): Promise<GoalState | undefined> {
+  if (!channelId) return undefined;
+  const goals = await listGoalStates();
+  return goals.find((goal) => goal.threadId === channelId);
+}
+
+async function resolveGoalForInteraction(
+  interaction: any,
+  rawGoalId?: string | null,
+  options: { allowLatest?: boolean } = {}
+): Promise<{ goal?: GoalState; source: 'explicit' | 'thread' | 'latest' | 'missing'; message?: string }> {
+  if (rawGoalId?.trim()) {
+    const goal = await readGoalState(normalizeGoalId(rawGoalId));
+    return goal
+      ? { goal, source: 'explicit' }
+      : { source: 'missing', message: `Unknown goal: \`goal-${normalizeGoalId(rawGoalId)}\`.` };
+  }
+
+  const threadGoal = await goalForThreadId(interaction.channelId);
+  if (threadGoal) return { goal: threadGoal, source: 'thread' };
+
+  if (options.allowLatest) {
+    const latest = await latestGoalForStatus();
+    if (latest) return { goal: latest, source: 'latest' };
+  }
+
+  return {
+    source: 'missing',
+    message: 'No goal id was provided, and this command was not used inside a recognized goal thread.',
+  };
+}
+
+function defaultApprovalTargetForGoal(goal: GoalState): string {
+  if (goal.status === 'ready-for-qa-approval') return goal.qaApprovalToken;
+  if (goal.status === 'plan-approved' || goal.status === 'agent-approved') return goal.agentApprovalToken;
+  return goal.planApprovalToken;
+}
+
+async function resolveApprovalTargetForInteraction(interaction: any, rawTarget?: string | null): Promise<string | undefined> {
+  if (rawTarget?.trim()) return rawTarget.trim();
+  const threadGoal = await goalForThreadId(interaction.channelId);
+  return threadGoal ? defaultApprovalTargetForGoal(threadGoal) : undefined;
+}
+
+function chunkMarkdownForDiscord(input: string, max = 1800): string[] {
+  let remaining = redactSensitive(input).trim();
+  const chunks: string[] = [];
+
+  while (remaining.length > max) {
+    const splitAt = Math.max(
+      remaining.lastIndexOf('\n\n', max),
+      remaining.lastIndexOf('\n', max),
+      Math.floor(max * 0.8)
+    );
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks.length ? chunks : ['(no response)'];
+}
+
+async function postOrionConversation(channel: TextChannel | any, goal: GoalState, title: string, response: string): Promise<void> {
+  await channel.send(`**${title}: goal-${goal.id}**`);
+  for (const chunk of chunkMarkdownForDiscord(response)) {
+    await channel.send(chunk);
+  }
+}
+
+function orionResponsePath(goal: GoalState, jobId: string): string {
+  return path.join(goal.runDir, `${jobId}-response.md`);
 }
 
 function upsertJob(goal: GoalState, job: JobRecord): void {
@@ -2001,8 +2095,13 @@ async function updateGithubIssueWithPlan(goal: GoalState, plan: string): Promise
   return undefined;
 }
 
-async function buildOrionPrompt(goal: GoalState, existingPlan?: string): Promise<string> {
+async function buildOrionPrompt(
+  goal: GoalState,
+  existingPlan?: string,
+  options: { style?: 'structured' | 'conversational'; feedback?: string; target?: string; source?: string } = {}
+): Promise<string> {
   const phase7Context = await readPhase7ContextForGoal(`${goal.description}\n${existingPlan || ''}`);
+  const conversational = options.style === 'conversational';
 
   return `
 You are Orion, the SwiftPark Project Manager / Orchestrator powered by Codex. Create or revise a plan only. Do not modify files.
@@ -2022,6 +2121,7 @@ Context:
 - Agent preference: ${goal.agents}
 - Primary screen: ${goal.primaryScreen || '(none)'}
 ${existingPlan ? `\nExisting plan to revise:\n${existingPlan}` : ''}
+${options.feedback ? `\nHuman feedback${options.target ? ` (${options.target})` : ''}${options.source ? ` from ${options.source}` : ''}:\n${options.feedback}` : ''}
 ${phase7Context ? `\nImported Phase 7 context from ${relativeToCommandCenter(phase7ContextPath)}:\n${phase7Context}` : ''}
 
 Required safety:
@@ -2036,13 +2136,21 @@ Required safety:
 - Do not print .env files, tokens, cookies, or private keys.
 - Preserve existing SwiftPark behavior unless the goal explicitly changes it.
 
+${conversational ? `
+Respond like a concise planning partner in Discord. Start with the direct answer to the human, explain what changed or what you recommend, and keep the tone natural.
+Do not repeat the full planning template unless the human specifically asks for the full plan.
+Still leave a usable execution handoff for Iris, Atlas, and Sentinel inside the same Markdown response. A compact "Execution Handoff" section is enough.
+The handoff should include scope, acceptance criteria, agent assignment, QA target, risks, and approval/next action when those details changed.
+If the existing saved plan remains valid, say so and only list the delta.
+` : `
 Return only the final Markdown plan. Do not include terminal logs, session metadata, web-search notes, token counts, preambles, or code fences.
+Use clear headings and enough detail for Iris, Atlas, and Sentinel to execute after approval.
+The outline below is preferred for new goals, but do not pad empty sections or force irrelevant work into the plan.
 Keep each section concise: one short paragraph or 2-5 bullets is enough unless the goal genuinely needs more detail.
-Do not leave any section empty. If a section does not apply, write one bullet saying it is not needed for this goal and why.
 For command-center or Discord-only validation goals, do not invent SwiftPark app screens, mobile screenshots, desktop screenshots, visual baselines, or Iris frontend work unless the goal explicitly asks for UI changes.
 Suggested Agent Assignment should be practical: use Sentinel for QA, Atlas only for command/backend reliability checks, Iris only for actual frontend/visual work, and Orion for planning/revision.
 
-Return Markdown with exactly these sections:
+Preferred Markdown outline:
 ## User Story
 ## Intent / Why This Matters
 ## Affected Screens/Routes
@@ -2054,6 +2162,7 @@ Return Markdown with exactly these sections:
 ## Suggested Agent Assignment
 ## Risks / Constraints
 ## Human Approvals Needed
+`}
 `.trim();
 }
 
@@ -2137,9 +2246,10 @@ async function createGoalWorktree(goal: GoalState): Promise<string> {
 async function runOrionPlanning(
   goal: GoalState,
   existingPlan?: string,
-  progress?: GoalProgressReporter
+  progress?: GoalProgressReporter,
+  options: { style?: 'structured' | 'conversational'; feedback?: string; target?: string; source?: string } = {}
 ): Promise<OrionPlanningResult> {
-  const prompt = await buildOrionPrompt(goal, existingPlan);
+  const prompt = await buildOrionPrompt(goal, existingPlan, options);
   await fs.writeFile(goal.paths.orionPromptMd, prompt + '\n');
   await setAgentRunning('orion', goal, existingPlan ? 'Revise SwiftPark goal plan' : 'Create SwiftPark goal plan');
 
@@ -2214,12 +2324,16 @@ async function runOrionPlanning(
     : `Clean Orion plan extracted and saved to ${relativeToCommandCenter(goal.paths.planMd)}.`;
   job.error = fallbackReason ? redactSensitive(fallbackReason) : undefined;
   job.outputPath = path.join(goal.runDir, `${job.id}.log`);
+  const responsePath = orionResponsePath(goal, job.id);
+  await fs.writeFile(responsePath, redactSensitive(planSource || result.output || '(no response)') + '\n');
   await fs.writeFile(
     job.outputPath,
     redactSensitive(
       [
         'Raw Orion/Codex output:',
         result.output || '(no stdout)',
+        '',
+        `Final Orion response: ${relativeToCommandCenter(responsePath)}`,
         '',
         'Extracted plan:',
         plan,
@@ -2234,6 +2348,7 @@ async function runOrionPlanning(
     lastError: usedFallback ? fallbackReason : undefined,
   });
   await updateGoalState(goal.id, (current) => {
+    current.lastOrionResponsePath = responsePath;
     upsertJob(current, job);
   });
   await setAgentFinished('orion', true, job.summary || plan);
@@ -2248,6 +2363,9 @@ async function runOrionPlanning(
   }).catch(() => undefined);
 
   await fs.writeFile(goal.paths.planMd, redactSensitive(plan) + '\n');
+  await updateGoalState(goal.id, (current) => {
+    current.lastOrionResponsePath = responsePath;
+  }).catch(() => undefined);
   await progress?.(latest, usedFallback ? 'Fallback Orion plan generated' : 'Orion plan complete', 'Posting plan to #orion-planning.');
   return { plan, job, usedFallback, fallbackReason };
 }
@@ -2403,6 +2521,27 @@ async function postPlanToGoalThread(goal: GoalState, title: string, plan: string
   } catch {
     // Thread posting is best-effort; slash commands remain authoritative.
   }
+}
+
+async function postOrionResponseToGoalThreadOrPlanning(
+  channels: Record<string, TextChannel>,
+  goal: GoalState,
+  title: string,
+  response: string
+): Promise<void> {
+  if (goal.threadId) {
+    try {
+      const thread = await client.channels.fetch(goal.threadId) as any;
+      if (thread?.send) {
+        await postOrionConversation(thread, goal, title, response);
+        return;
+      }
+    } catch {
+      // Fall through to the planning channel.
+    }
+  }
+
+  await postOrionConversation(channels['pm-planning'], goal, title, response);
 }
 
 function assertSeparateWorktree(goal: GoalState): void {
@@ -2834,21 +2973,8 @@ async function runOrionRevision(
   task: string,
   channels: Record<string, TextChannel>
 ): Promise<ShellResult> {
-  const existingPlan = await readPlan(goal);
-  const revised = await runOrionPlanning(goal, `${existingPlan}\n\nRequested revision task:\n${task}`);
-  const latest = await readGoalState(goal.id);
-
-  if (latest) {
-    const issueUpdateWarning = await updateGithubIssueWithPlan(latest, revised.plan);
-    if (issueUpdateWarning) {
-      latest.githubWarning = [latest.githubWarning, issueUpdateWarning].filter(Boolean).join('\n\n');
-      await writeGoalState(latest, revised.plan);
-    }
-  }
-
-  await postPlan(channels['pm-planning'], latest || goal, revised.plan);
-  if (latest) await postPlanToGoalThread(latest, 'Orion Revised Plan', revised.plan);
-  return { ok: true, output: revised.plan };
+  const revised = await reviseGoalPlan(goal, task, 'orion', channels, 'run-agent', '/run-agent agent:orion');
+  return { ok: true, output: revised.response };
 }
 
 async function reviseGoalPlan(
@@ -2856,8 +2982,9 @@ async function reviseGoalPlan(
   feedback: string,
   target: string,
   channels: Record<string, TextChannel>,
-  requestedBy: string
-): Promise<GoalState> {
+  requestedBy: string,
+  source = '/revise-goal'
+): Promise<{ goal: GoalState; response: string }> {
   const safeFeedback = redactSensitive(feedback);
   const revisionEntry = [
     `## ${new Date().toISOString()}`,
@@ -2880,13 +3007,14 @@ async function reviseGoalPlan(
   const existingPlan = await readPlan(goal);
   const revised = await runOrionPlanning(
     goal,
-    [
-      existingPlan,
-      '',
-      'Revision feedback:',
-      `Target: ${target}`,
-      safeFeedback,
-    ].join('\n')
+    existingPlan,
+    undefined,
+    {
+      style: 'conversational',
+      feedback: safeFeedback,
+      target,
+      source,
+    }
   );
 
   const latest = await updateGoalState(goal.id, (current) => {
@@ -2904,9 +3032,16 @@ async function reviseGoalPlan(
     await writeGoalState(latest, revised.plan);
   }
 
-  await postPlan(channels['pm-planning'], latest, revised.plan);
-  await postPlanToGoalThread(latest, 'Orion Revised Plan', revised.plan);
-  return latest;
+  await channels['pm-planning'].send(
+    [
+      `Orion revised goal-${latest.id}.`,
+      latest.threadName ? `Thread: \`${latest.threadName}\`` : '',
+      `Saved response: \`${latest.lastOrionResponsePath ? relativeToCommandCenter(latest.lastOrionResponsePath) : relativeToCommandCenter(latest.paths.planMd)}\``,
+      `Approve with \`/approve target:${latest.planApprovalToken}\`.`,
+    ].filter(Boolean).join('\n')
+  ).catch(() => undefined);
+  await postOrionResponseToGoalThreadOrPlanning(channels, latest, 'Orion Reply', revised.plan);
+  return { goal: latest, response: revised.plan };
 }
 
 async function runScoutStub(goal: GoalState, task: string): Promise<ShellResult> {
@@ -3634,8 +3769,13 @@ async function shutdownBot(signal: NodeJS.Signals): Promise<void> {
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
 
+const clientIntents = [GatewayIntentBits.Guilds];
+if (orionThreadRepliesEnabled) {
+  clientIntents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
+}
+
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: clientIntents,
 });
 
 process.once('SIGINT', () => {
@@ -3700,8 +3840,63 @@ async function handleInteractionError(interaction: any, err: any): Promise<void>
   }
 }
 
+async function handleAutocompleteInteraction(interaction: any): Promise<void> {
+  if (!allowedUsers.has(interaction.user.id)) {
+    await interaction.respond([]).catch(() => undefined);
+    return;
+  }
+
+  const focused = interaction.options.getFocused(true);
+  const focusedValue = String(focused.value || '').toLowerCase();
+  const goals = await listGoalStates();
+
+  if (focused.name === 'goal_id') {
+    const choices = goals
+      .filter((goal) => {
+        const haystack = `${goal.id} ${goal.description} ${goal.status}`.toLowerCase();
+        return !focusedValue || haystack.includes(focusedValue.replace(/^goal-/, ''));
+      })
+      .slice(0, 25)
+      .map((goal) => ({
+        name: goalDisplayLabel(goal),
+        value: goal.id,
+      }));
+
+    await interaction.respond(choices).catch(() => undefined);
+    return;
+  }
+
+  if (focused.name === 'target') {
+    const targets = goals.flatMap((goal) => [
+      { name: `approve plan | ${goalDisplayLabel(goal)}`, value: goal.planApprovalToken },
+      { name: `approve QA | ${goalDisplayLabel(goal)}`, value: goal.qaApprovalToken },
+      { name: `approve agent | ${goalDisplayLabel(goal)}`, value: goal.agentApprovalToken },
+    ]);
+    const choices = targets
+      .filter((choice) => {
+        const haystack = `${choice.name} ${choice.value}`.toLowerCase();
+        return !focusedValue || haystack.includes(focusedValue);
+      })
+      .slice(0, 25)
+      .map((choice) => ({
+        name: choice.name.length > 100 ? `${choice.name.slice(0, 97)}...` : choice.name,
+        value: choice.value,
+      }));
+
+    await interaction.respond(choices).catch(() => undefined);
+    return;
+  }
+
+  await interaction.respond([]).catch(() => undefined);
+}
+
 client.on('interactionCreate', async (interaction: any) => {
   try {
+    if (interaction.isAutocomplete()) {
+      await handleAutocompleteInteraction(interaction);
+      return;
+    }
+
     if (interaction.isChatInputCommand()) {
       await handleChatInputCommand(interaction);
       return;
@@ -3712,6 +3907,50 @@ client.on('interactionCreate', async (interaction: any) => {
     }
   } catch (err: any) {
     await handleInteractionError(interaction, err);
+  }
+});
+
+client.on('messageCreate', async (message: any) => {
+  if (!orionThreadRepliesEnabled) return;
+  if (!message.guild || message.author?.bot) return;
+  if (!allowedUsers.has(message.author.id)) return;
+
+  const content = String(message.content || '').trim();
+  if (!content || content.startsWith('/')) return;
+
+  const goal = await goalForThreadId(message.channelId);
+  if (!goal) return;
+
+  const forbidden = isForbiddenTask(content);
+  if (forbidden) {
+    await message.reply(`Orion thread reply blocked: ${forbidden}.`).catch(() => undefined);
+    return;
+  }
+
+  try {
+    const setup = await ensureChannels(message.guild);
+    await message.channel?.sendTyping?.().catch(() => undefined);
+    await message.reply(`Orion is revising goal-${goal.id} from this thread message.`).catch(() => undefined);
+    const { goal: revisedGoal } = await reviseGoalPlan(
+      goal,
+      content,
+      'thread',
+      setup.channels,
+      message.author.id,
+      'goal thread message'
+    );
+    await postAgentStatusBoard(setup.channels).catch(() => undefined);
+    await notifySubscribers(
+      setup.channels,
+      `Orion revised goal-${revisedGoal.id} from a goal thread message. Approval needed: /approve target:${revisedGoal.planApprovalToken}`
+    ).catch(() => undefined);
+  } catch (err: any) {
+    const errorOutput = err?.stack || err?.message || String(err);
+    const setup = await ensureChannels(message.guild).catch(() => undefined);
+    if (setup) {
+      await postCommandCenterError(setup.channels, `Goal thread reply failed for goal-${goal.id}`, errorOutput, goal.id).catch(() => undefined);
+    }
+    await message.reply('Orion could not revise from that thread message. Check #echo-logs.').catch(() => undefined);
   }
 });
 
@@ -4055,10 +4294,11 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
 
   if (interaction.commandName === 'goal-status') {
     const requestedGoalId = interaction.options.getString('goal_id') || undefined;
-    const goal = await latestGoalForStatus(requestedGoalId ? normalizeGoalId(requestedGoalId) : undefined);
+    const resolved = await resolveGoalForInteraction(interaction, requestedGoalId, { allowLatest: true });
+    const goal = resolved.goal;
 
     if (!goal) {
-      await interaction.editReply('No goal records found yet.');
+      await interaction.editReply(resolved.message || 'No goal records found yet.');
       return;
     }
 
@@ -4067,13 +4307,14 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
   }
 
   if (interaction.commandName === 'plan') {
-    const goalId = normalizeGoalId(interaction.options.getString('goal_id', true));
+    const requestedGoalId = interaction.options.getString('goal_id') || undefined;
     const requestedFormat = interaction.options.getString('format');
     const format = isPlanDisplayFormat(requestedFormat) ? requestedFormat : 'summary';
-    const goal = await readGoalState(goalId);
+    const resolved = await resolveGoalForInteraction(interaction, requestedGoalId, { allowLatest: true });
+    const goal = resolved.goal;
 
     if (!goal) {
-      await interaction.editReply(`Unknown goal: \`goal-${goalId}\`.`);
+      await interaction.editReply(resolved.message || 'No goal records found yet.');
       return;
     }
 
@@ -4096,7 +4337,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
         `## Orion Plan: goal-${goal.id}`,
         `Format: \`${format}\``,
         `Saved plan: \`${relativeToCommandCenter(goal.paths.planMd)}\``,
-        format === 'summary' ? `Use \`/plan goal_id:${goal.id} format:full\` for the complete saved plan.` : '',
+        format === 'summary' ? `Use \`/plan${resolved.source === 'thread' ? ' format:full' : ` goal_id:${goal.id} format:full`}\` for the complete saved plan.` : '',
       ].filter(Boolean).join('\n'),
       chunks
     );
@@ -4110,12 +4351,13 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
   }
 
   if (interaction.commandName === 'cancel-goal' || interaction.commandName === 'cancel') {
-    const goalId = normalizeGoalId(interaction.options.getString('goal_id', true));
+    const requestedGoalId = interaction.options.getString('goal_id') || undefined;
     const reason = interaction.options.getString('reason') || 'Canceled by human request.';
-    const goal = await readGoalState(goalId);
+    const resolved = await resolveGoalForInteraction(interaction, requestedGoalId);
+    const goal = resolved.goal;
 
     if (!goal) {
-      await interaction.editReply(`Unknown goal: \`goal-${goalId}\`.`);
+      await interaction.editReply(resolved.message || 'No goal records found yet.');
       return;
     }
 
@@ -4167,13 +4409,14 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
   }
 
   if (interaction.commandName === 'revise-goal') {
-    const goalId = normalizeGoalId(interaction.options.getString('goal_id', true));
     const feedback = interaction.options.getString('feedback', true);
     const target = interaction.options.getString('target') || 'general';
-    const goal = await readGoalState(goalId);
+    const requestedGoalId = interaction.options.getString('goal_id') || undefined;
+    const resolved = await resolveGoalForInteraction(interaction, requestedGoalId);
+    const goal = resolved.goal;
 
     if (!goal) {
-      await interaction.editReply(`Unknown goal: \`goal-${goalId}\`.`);
+      await interaction.editReply(resolved.message || 'No goal records found yet.');
       return;
     }
 
@@ -4186,7 +4429,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     await interaction.editReply(`Orion is revising goal-${goal.id}. No implementation agents will run automatically.`);
 
     try {
-      const revisedGoal = await reviseGoalPlan(goal, feedback, target, channels, interaction.user.id);
+      const { goal: revisedGoal } = await reviseGoalPlan(goal, feedback, target, channels, interaction.user.id, '/revise-goal');
       await postAgentStatusBoard(channels).catch(() => undefined);
       await notifySubscribers(
         channels,
@@ -4195,7 +4438,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       await interaction.editReply(
         [
           `Orion revised goal-${revisedGoal.id}.`,
-          `Plan posted to #orion-planning.`,
+          revisedGoal.threadName ? `Response posted in thread \`${revisedGoal.threadName}\`.` : `Response posted to #orion-planning.`,
           revisedGoal.threadName ? `Thread: \`${revisedGoal.threadName}\`` : '',
           `Approve with \`/approve target:${revisedGoal.planApprovalToken}\`.`,
         ].filter(Boolean).join('\n')
@@ -4338,7 +4581,6 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
   }
 
   if (interaction.commandName === 'run-agent') {
-    const goalId = normalizeGoalId(interaction.options.getString('goal_id', true));
     const requestedAgent = interaction.options.getString('agent', true);
 
     if (!isRunnableAgent(requestedAgent)) {
@@ -4346,9 +4588,11 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       return;
     }
 
-    const goal = await readGoalState(goalId);
+    const requestedGoalId = interaction.options.getString('goal_id') || undefined;
+    const resolved = await resolveGoalForInteraction(interaction, requestedGoalId);
+    const goal = resolved.goal;
     if (!goal) {
-      await interaction.editReply(`Unknown goal: \`goal-${goalId}\`.`);
+      await interaction.editReply(resolved.message || 'No goal records found yet.');
       return;
     }
 
@@ -4378,7 +4622,11 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
   }
 
   if (interaction.commandName === 'approve') {
-    const target = interaction.options.getString('target', true);
+    const target = await resolveApprovalTargetForInteraction(interaction, interaction.options.getString('target'));
+    if (!target) {
+      await interaction.editReply('No approval target was provided, and this command was not used inside a recognized goal thread.');
+      return;
+    }
     const lowerTarget = target.toLowerCase();
 
     if (lowerTarget.startsWith('plan-')) {
@@ -4473,8 +4721,12 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
   }
 
   if (interaction.commandName === 'reject') {
-    const target = interaction.options.getString('target', true);
+    const target = await resolveApprovalTargetForInteraction(interaction, interaction.options.getString('target'));
     const reason = interaction.options.getString('reason', true);
+    if (!target) {
+      await interaction.editReply('No rejection target was provided, and this command was not used inside a recognized goal thread.');
+      return;
+    }
 
     if (target.toLowerCase().startsWith('plan-') || target.toLowerCase().startsWith('qa-') || target.toLowerCase().startsWith('agent-')) {
       const goalId = normalizeGoalId(target);

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { agentDefinitions } from '../src/agents.ts';
 import { requiredChannelDefinitions } from '../src/channels.ts';
-import { formatPlanForDiscord, validateOrionPlan } from '../src/plans.ts';
+import { extractOrionPlan, formatPlanForDiscord, validateOrionPlan } from '../src/plans.ts';
 
 const root = process.cwd();
 
@@ -132,6 +132,18 @@ assert(fullChunks.every((chunk) => chunk.length <= 1800), 'full plan chunks shou
 assert(fullChunks.join('\n').includes('Acceptance item 35'), 'full plan chunks should retain final details');
 assert(!fullChunks.join('\n').includes('[truncated]'), 'full plan chunks should not use truncation marker');
 
+const conversationalOrion = `
+Yep, I would keep this as an Iris-only polish pass and leave backend out of scope.
+
+## Execution Handoff
+- Scope: Brighton selected spot state and mobile bottom sheet clarity.
+- Iris: tighten selected-state visual hierarchy.
+- Sentinel: run brighton-spot-map mobile and desktop only.
+`.trim();
+const conversationalExtract = extractOrionPlan(conversationalOrion);
+assert(conversationalExtract.ok, 'conversational Orion responses should be accepted as valid saved plans');
+assert(conversationalExtract.plan.includes('Iris-only polish pass'), 'conversational Orion content should be preserved');
+
 for (const goalId of ['20260520051938-a1yc', '20260520055916-xinq']) {
   const runDir = path.join(root, 'runs', `goal-${goalId}`);
   for (const file of ['goal.json', 'status.json', 'state.json', 'plan.md']) {
@@ -150,6 +162,10 @@ for (const agentId of expectedAgentOrder) {
 }
 
 const botSource = await readFile(path.join(root, 'src', 'bot.ts'), 'utf8');
+assert(botSource.includes('ORION_THREAD_REPLIES_ENABLED'), 'Orion thread reply env gate missing');
+assert(botSource.includes("client.on('messageCreate'"), 'Orion thread message handler missing');
+assert(botSource.includes('resolveGoalForInteraction'), 'goal thread inference helper missing');
+assert(botSource.includes('.setAutocomplete(true)'), 'goal autocomplete should be enabled for command options');
 assert(botSource.includes('pulse:gym:yes'), 'Pulse gym yes button missing');
 assert(botSource.includes('Pulse Gym Check'), 'Pulse gym prompt missing');
 assert(botSource.includes('context/SWIFTPARK_PHASE7_CONTEXT.md'), 'Phase 7 context path should be surfaced in Pulse brief');

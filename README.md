@@ -112,6 +112,8 @@ Approve the plan:
 /approve target:plan-<goal_id>
 ```
 
+Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target.
+
 In `plan-only` mode, approval is recorded and the goal waits for `/run-agent`. In `execute-after-approval` mode, Iris and/or Atlas run based on the selected assignment, then Sentinel runs visual QA.
 
 ## Run Agents
@@ -119,7 +121,7 @@ In `plan-only` mode, approval is recorded and the goal waits for `/run-agent`. I
 Run an agent manually:
 
 ```text
-/run-agent goal_id:<id> agent:<orion|iris|atlas|sentinel|scout> task:<optional>
+/run-agent agent:<orion|iris|atlas|sentinel|scout> goal_id:<optional> task:<optional>
 ```
 
 - `orion` revises or expands the plan.
@@ -148,19 +150,19 @@ This shows each agent, role, tool, current status, current task, current step, e
 Inspect or cancel goal runs:
 
 ```text
-/plan goal_id:<id> format:<summary|full>
+/plan goal_id:<optional> format:<summary|full>
 /goal-status goal_id:<optional>
 /runs limit:<optional>
 /active-runs limit:<optional>
-/cancel-goal goal_id:<id> reason:<optional>
-/cancel goal_id:<id> reason:<optional>
+/cancel-goal goal_id:<optional> reason:<optional>
+/cancel goal_id:<optional> reason:<optional>
 /github-status
 /jira-status
 /log-change summary:<text> goal_id:<optional>
 /decision summary:<text> rationale:<optional> goal_id:<optional>
 ```
 
-`/plan` shows either a concise phone summary or the complete saved `plan.md` in clean Discord chunks. Orion's initial plan post uses the same full chunking path, so long plans should split across messages instead of dropping sections. `/goal-status` shows status, current step, agent, elapsed time, worktree path, whether `plan.md` exists, last error, and next expected action. `/runs` and `/active-runs` list recent, running, stale, failed, and approved goals. `/cancel-goal` and `/cancel` mark the goal canceled and stop tracked local subprocesses when possible. If an older subprocess survived a bot restart, stop it from the terminal and keep the run files for audit.
+`/plan`, `/goal-status`, `/cancel-goal`, `/cancel`, `/run-agent`, `/revise-goal`, `/approve`, and `/reject` infer the goal automatically when used inside a goal thread. Outside a thread, goal/target fields use Discord autocomplete for recent goals. `/plan` shows either a concise phone summary or the complete saved `plan.md` in clean Discord chunks. Orion's initial plan post uses the same full chunking path, so long plans should split across messages instead of dropping sections. `/goal-status` shows status, current step, agent, elapsed time, worktree path, whether `plan.md` exists, last error, and next expected action. `/runs` and `/active-runs` list recent, running, stale, failed, and approved goals. `/cancel-goal` and `/cancel` mark the goal canceled and stop tracked local subprocesses when possible. If an older subprocess survived a bot restart, stop it from the terminal and keep the run files for audit.
 
 ## Help And Revisions
 
@@ -174,10 +176,10 @@ Show onboarding and the command directory:
 Ask Orion to revise a goal plan:
 
 ```text
-/revise-goal goal_id:<id> feedback:<text> target:<general|plan|iris|atlas|sentinel>
+/revise-goal feedback:<text> target:<general|plan|iris|atlas|sentinel> goal_id:<optional>
 ```
 
-Message-reading is intentionally avoided for now. Goal threads are useful for organization, but slash commands remain the control path.
+Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are treated as Orion revision feedback. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
 
 ## Notifications
 
