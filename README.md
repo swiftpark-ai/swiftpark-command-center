@@ -251,9 +251,9 @@ Manual log:
 
 - `screen`: posts only mobile and desktop screenshots for the selected screen.
 - `smoke`: posts the Brighton facility and Brighton spot-map core set.
-- `full`: posts all available manual screenshots, capped by `QA_MAX_SCREENSHOT_UPLOADS`.
-- Unsupported targets such as “dashboard” are skipped with a clear Sentinel message until a Playwright QA screen/route is registered. A skipped unsupported target is not reported as a Playwright failure.
-- Sentinel resolves a QA package root before running. If the repo/worktree root has no `package.json`, it searches nearby package roots. If none define the script required by `QA_COMMAND`, Sentinel skips with the checked candidates and setup guidance instead of posting raw `npm ENOENT`.
+- `full`: runs mobile-web QA and dashboard QA, then posts available manual screenshots capped by `QA_MAX_SCREENSHOT_UPLOADS`.
+- Dashboard targets are supported as `dashboard-overview` and `dashboard-cameras`; dashboard aliases map to `dashboard-overview` by default.
+- Sentinel resolves a QA package root before running. If the repo/worktree root has no `package.json`, it searches nearby package roots. If none define the script required by `QA_COMMAND` or `QA_DASHBOARD_COMMAND`, Sentinel skips with the checked candidates and setup guidance instead of posting raw `npm ENOENT`.
 
 Standalone QA:
 

@@ -57,6 +57,7 @@ const allowedUsers = new Set(
 );
 
 const qaCommand = process.env.QA_COMMAND || 'npm run qa';
+const qaDashboardCommand = process.env.QA_DASHBOARD_COMMAND || 'npm run qa:dashboard';
 const qaRootOverride = process.env.QA_ROOT || process.env.QA_WORKDIR || '';
 const commandTimeoutMs = envMs('COMMAND_TIMEOUT_MS', 0);
 const maxScreenshotUploads = Number(process.env.QA_MAX_SCREENSHOT_UPLOADS || 30);
@@ -333,7 +334,7 @@ type StoredMessageRefs = {
   }>;
 };
 
-const qaScreenNames = [
+const qaDriverScreenNames = [
   'brighton-facility',
   'brighton-spot-map',
   'brighton-spot-details',
@@ -341,6 +342,16 @@ const qaScreenNames = [
   'brighton-parked',
   'osu-facility',
   'osu-spot-map',
+] as const;
+
+const qaDashboardScreenNames = [
+  'dashboard-overview',
+  'dashboard-cameras',
+] as const;
+
+const qaScreenNames = [
+  ...qaDriverScreenNames,
+  ...qaDashboardScreenNames,
 ] as const;
 
 const qaSmokeScreens = [
@@ -353,22 +364,7 @@ const qaProjects = [
   'desktop-chrome',
 ] as const;
 
-const qaUnsupportedTargets: QaUnsupportedTarget[] = [
-  {
-    id: 'dashboard',
-    aliases: [
-      'dashboard',
-      'operator dashboard',
-      'admin dashboard',
-      'dashboard screenshot',
-      'dashboard screenshots',
-      'dashboard overview',
-      'dashboard route',
-    ],
-    reason: 'Dashboard screenshot automation is not registered in the Playwright QA target list yet.',
-    nextAction: 'Add a supported dashboard QA screen/route to the QA target registry, or ask Sentinel for one of the supported screens.',
-  },
-];
+const qaUnsupportedTargets: QaUnsupportedTarget[] = [];
 
 const inspectDiscordSources: Array<{ name: string; value: InspectDiscordSource }> = [
   { name: 'current-thread', value: 'current-thread' },
@@ -631,6 +627,10 @@ function isQaScreenName(value: string | null): value is typeof qaScreenNames[num
   return Boolean(value && qaScreenNames.includes(value as typeof qaScreenNames[number]));
 }
 
+function isDashboardQaScreen(value: string | null): value is typeof qaDashboardScreenNames[number] {
+  return Boolean(value && qaDashboardScreenNames.includes(value as typeof qaDashboardScreenNames[number]));
+}
+
 function isInspectDiscordSource(value: string | null): value is InspectDiscordSource {
   return Boolean(value && inspectDiscordSources.some((source) => source.value === value));
 }
@@ -663,6 +663,24 @@ function getQaSelection(mode: QaMode, screen: string | null) {
   };
 }
 
+function dashboardScreenForText(text: string): typeof qaDashboardScreenNames[number] | null {
+  if (!/\b(dashboard|operator|admin)\b/.test(text)) return null;
+  if (/\b(camera|cameras|yolo|detection|live feed|health)\b/.test(text)) {
+    return 'dashboard-cameras';
+  }
+  return 'dashboard-overview';
+}
+
+function qaScreenForText(text: string, defaultScreen?: string): typeof qaScreenNames[number] | null {
+  const defaultQaScreen = isQaScreenName(defaultScreen || null)
+    ? defaultScreen as typeof qaScreenNames[number]
+    : null;
+
+  return qaScreenNames.find((screen) => text.includes(screen.toLowerCase()))
+    || dashboardScreenForText(text)
+    || defaultQaScreen;
+}
+
 function qaUnsupportedTargetForText(text: string): QaUnsupportedTarget | undefined {
   const lower = text.toLowerCase();
   return qaUnsupportedTargets.find((target) =>
@@ -678,12 +696,7 @@ function parseQaTask(task: string, defaultScreen?: string): QaTaskParseResult {
     return { mode: 'full' as QaMode, screen: null, unsupportedTarget };
   }
 
-  const defaultQaScreen = isQaScreenName(defaultScreen || null)
-    ? defaultScreen as typeof qaScreenNames[number]
-    : null;
-  const taskScreen =
-    qaScreenNames.find((screen) => lowerTask.includes(screen.toLowerCase())) ||
-    defaultQaScreen;
+  const taskScreen = qaScreenForText(lowerTask, defaultScreen);
 
   if (lowerTask.includes('screen') || taskScreen) {
     return taskScreen
@@ -696,11 +709,33 @@ function parseQaTask(task: string, defaultScreen?: string): QaTaskParseResult {
 
 function buildQaScript(selection: ReturnType<typeof getQaSelection>): string {
   if (selection.mode === 'full' || selection.screens.length === 0) {
-    return qaCommand;
+    return `${qaCommand} && ${qaDashboardCommand}`;
   }
 
   const grep = selection.screens.map(escapeRegExp).join('|');
-  return `${qaCommand} -- --grep ${quoteForShell(grep)}`;
+  const command = selection.screens.some((screen) => isDashboardQaScreen(screen))
+    ? qaDashboardCommand
+    : qaCommand;
+  return `${command} -- --grep ${quoteForShell(grep)}`;
+}
+
+function selectionIncludesDashboard(selection: ReturnType<typeof getQaSelection>): boolean {
+  return selection.mode === 'full' || selection.screens.some((screen) => isDashboardQaScreen(screen));
+}
+
+function selectionIncludesDriver(selection: ReturnType<typeof getQaSelection>): boolean {
+  return selection.mode === 'full' || selection.screens.some((screen) => !isDashboardQaScreen(screen));
+}
+
+function localQaReportLabel(root: string, selection: ReturnType<typeof getQaSelection>): string {
+  const reports: string[] = [];
+  if (selectionIncludesDriver(selection)) {
+    reports.push(path.relative(root, path.join(root, 'playwright-report/index.html')));
+  }
+  if (selectionIncludesDashboard(selection)) {
+    reports.push(path.relative(root, path.join(root, 'playwright-report-dashboard/index.html')));
+  }
+  return reports.join(', ') || path.relative(root, path.join(root, 'playwright-report/index.html'));
 }
 
 function requiredPackageScriptForQaCommand(script: string): string | undefined {
@@ -726,8 +761,8 @@ async function packageJsonSupportsQa(packageJsonPath: string, requiredScript?: s
   }
 }
 
-async function resolveQaRoot(root: string): Promise<QaRootResolution> {
-  const requiredScript = requiredPackageScriptForQaCommand(qaCommand);
+async function resolveQaRoot(root: string, script = qaCommand): Promise<QaRootResolution> {
+  const requiredScript = requiredPackageScriptForQaCommand(script);
   const candidates: string[] = [];
 
   const evaluatePackage = async (packageJsonPath: string): Promise<string | undefined> => {
@@ -797,10 +832,10 @@ async function resolveQaRoot(root: string): Promise<QaRootResolution> {
     candidates: uniqueCandidates,
     requiredScript,
     reason: uniqueCandidates.length === 0
-      ? `No package.json found under \`${root}\`, so Sentinel cannot run \`${qaCommand}\`.`
+      ? `No package.json found under \`${root}\`, so Sentinel cannot run \`${script}\`.`
       : requiredScript
-        ? `Found package.json candidate(s), but none define script \`${requiredScript}\` required by \`${qaCommand}\`.`
-        : `Found package.json candidate(s), but Sentinel could not choose a safe QA root for \`${qaCommand}\`.`,
+        ? `Found package.json candidate(s), but none define script \`${requiredScript}\` required by \`${script}\`.`
+        : `Found package.json candidate(s), but Sentinel could not choose a safe QA root for \`${script}\`.`,
   };
 }
 
@@ -3369,7 +3404,7 @@ function resolveExecutionDecision(goal: GoalState, plan: string): ExecutionDecis
     skipped.push('Iris skipped because the current plan reads as read-only/audit work, not frontend implementation.');
   }
 
-  const supportedScreenRequested = qaScreenNames.some((screen) => text.includes(screen.toLowerCase())) || isQaScreenName(goal.primaryScreen || null);
+  const supportedScreenRequested = Boolean(qaScreenForText(text, goal.primaryScreen));
   const qaRequested = /\b(sentinel|qa|playwright|screenshot|screenshots|visual approval|visual check|test)\b/.test(text) || supportedScreenRequested;
   const unsupportedTarget = qaUnsupportedTargetForText(text);
   const sentinelHeld = planHoldsAgent(text, 'sentinel');
@@ -3475,6 +3510,7 @@ async function runImplementationAgent(goal: GoalState, agent: 'iris' | 'atlas', 
 async function cleanQaArtifacts(root: string) {
   await fs.rm(path.join(root, 'test-results'), { recursive: true, force: true });
   await fs.rm(path.join(root, 'playwright-report'), { recursive: true, force: true });
+  await fs.rm(path.join(root, 'playwright-report-dashboard'), { recursive: true, force: true });
 }
 
 function manualScreenshotKey(root: string, file: string) {
@@ -3587,6 +3623,8 @@ async function findQaDiagnostics(root: string) {
       'test-results/**/*.{webm,zip}',
       'playwright-report/**/*.md',
       'playwright-report/**/*.{webm,zip}',
+      'playwright-report-dashboard/**/*.md',
+      'playwright-report-dashboard/**/*.{webm,zip}',
     ],
     {
       cwd: root,
@@ -3677,7 +3715,8 @@ async function runQaFlow(
   selection: ReturnType<typeof getQaSelection>,
   options: ShellOptions = {}
 ): Promise<ShellResult & { uploadSummary: string; qa: QaRunSummary }> {
-  const qaRoot = await resolveQaRoot(root);
+  const script = buildQaScript(selection);
+  const qaRoot = await resolveQaRoot(root, script);
   const displayQaRoot = qaRoot.ok ? qaRoot.root : root;
   const candidateLines = qaRoot.candidates.length
     ? qaRoot.candidates.slice(0, 8).map((candidate) => `- \`${candidate}\``)
@@ -3695,7 +3734,7 @@ async function runQaFlow(
       `Reason: ${warning}`,
       'Package candidates checked:',
       ...candidateLines,
-      'Next action: set `QA_ROOT`/`QA_WORKDIR` to the package that owns visual QA, add the required QA script, or register a supported dashboard QA target before rerunning Sentinel.',
+      'Next action: set `QA_ROOT`/`QA_WORKDIR` to the package that owns visual QA, or add the required QA script before rerunning Sentinel.',
     ].join('\n');
 
     await channel.send([
@@ -3736,7 +3775,6 @@ async function runQaFlow(
   }
 
   await cleanQaArtifacts(qaRoot.root);
-  const script = buildQaScript(selection);
   const result = await shellScript(script, qaRoot.root, {
     timeoutMs: options.timeoutMs ?? sentinelMaxRuntimeMs,
     activeKey: options.activeKey,
@@ -3756,7 +3794,7 @@ async function runQaFlow(
       `Playwright: ${summarizeQaOutput(result.output)}`,
       `Screenshots uploaded: ${uploadResult.uploaded}/${uploadResult.selected}`,
       `Local screenshots: \`${path.relative(root, path.join(qaRoot.root, 'test-results/manual-screenshots'))}\``,
-      `Local report: \`${path.relative(root, path.join(qaRoot.root, 'playwright-report/index.html'))}\``,
+      `Local report: \`${localQaReportLabel(qaRoot.root, selection)}\``,
     ].join('\n')
   ).catch(() => {});
 
@@ -3794,7 +3832,7 @@ async function runQaFlow(
       skipped: uploadResult.skipped,
       warnings: uploadResult.warnings,
       localScreenshots: path.relative(root, path.join(qaRoot.root, 'test-results/manual-screenshots')),
-      localReport: path.relative(root, path.join(qaRoot.root, 'playwright-report/index.html')),
+      localReport: localQaReportLabel(qaRoot.root, selection),
       playwrightSummary: summarizeQaOutput(result.output),
     },
   };
@@ -3860,7 +3898,28 @@ async function runSentinelAgent(
 
   const selection = getQaSelection(parsed.mode, parsed.screen);
   const label = `goal-${goal.id} ${selection.mode}${parsed.screen ? ` ${parsed.screen}` : ''}`;
-  const result = await runQaFlow(goal.worktreePath, channels['qa-visual'], label, selection, {
+  let qaExecutionRoot = goal.worktreePath;
+
+  if (selectionIncludesDashboard(selection)) {
+    const script = buildQaScript(selection);
+    const worktreeQa = await resolveQaRoot(goal.worktreePath, script).catch(() => undefined);
+    if (!worktreeQa?.ok) {
+      const repoQa = await resolveQaRoot(repoPath, script).catch(() => undefined);
+      if (repoQa?.ok) {
+        qaExecutionRoot = repoPath;
+        await channels['qa-visual'].send(
+          [
+            'Dashboard QA fallback:',
+            `Goal worktree does not have the dashboard QA script yet: \`${goal.worktreePath}\``,
+            `Running dashboard screenshots against configured product repo: \`${repoPath}\``,
+            'Use a refreshed worktree after the dashboard QA harness is merged if you need screenshots of unmerged goal-specific dashboard changes.',
+          ].join('\n')
+        ).catch(() => undefined);
+      }
+    }
+  }
+
+  const result = await runQaFlow(qaExecutionRoot, channels['qa-visual'], label, selection, {
     timeoutMs: sentinelMaxRuntimeMs,
     activeKey: jobId,
     goalId: goal.id,

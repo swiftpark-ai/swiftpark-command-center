@@ -19,6 +19,8 @@ const screens = [
   'brighton-parked',
   'osu-facility',
   'osu-spot-map',
+  'dashboard-overview',
+  'dashboard-cameras',
 ];
 const smokeScreens = ['brighton-facility', 'brighton-spot-map'];
 const projects = ['mobile-chrome', 'desktop-chrome'];
@@ -267,23 +269,29 @@ pass('/clear-blocker', 'stale blocker cleanup source path is present and approva
 
 const files = fakeScreenshots();
 const screenSelection = qaSelection('screen', 'brighton-spot-map');
+const dashboardSelection = qaSelection('screen', 'dashboard-overview');
 const smokeSelection = qaSelection('smoke');
 const fullSelection = qaSelection('full', null, 6, 6);
 const screenFiles = selectManualScreenshots(files, screenSelection);
+const dashboardFiles = selectManualScreenshots(files, dashboardSelection);
 const smokeFiles = selectManualScreenshots(files, smokeSelection);
 const fullFiles = selectManualScreenshots(files, fullSelection);
 assert.equal(screenFiles.length, 2, 'screen mode should post mobile + desktop only');
 assert(screenFiles.every((file) => file.includes('brighton-spot-map')), 'screen mode should only post selected screen');
+assert.equal(dashboardFiles.length, 2, 'dashboard screen mode should post mobile + desktop only');
+assert(dashboardFiles.every((file) => file.includes('dashboard-overview')), 'dashboard screen mode should only post selected dashboard screen');
 assert.equal(new Set(screenFiles).size, screenFiles.length, 'screen mode should avoid duplicate screenshots');
 assert.equal(smokeFiles.length, 4, 'smoke mode should post two screens across two projects');
 assert(fullFiles.length <= 6, 'full mode should respect cap');
 assert(botSource.includes('qaUnsupportedTargets'), 'unsupported QA target registry missing');
+assert(botSource.includes('QA_DASHBOARD_COMMAND'), 'dashboard QA command env support missing');
+assert(botSource.includes('qaDashboardCommand'), 'dashboard QA command routing missing');
 assert(botSource.includes('Status: SKIPPED (Sentinel)'), 'Sentinel skipped target summary missing');
 assert(botSource.includes('Found package.json candidate(s), but none define script'), 'QA root missing-script guidance missing');
 assert(botSource.includes('QA package candidates checked'), 'QA candidate reporting missing');
-pass('/run-agent sentinel', 'targeted brighton-spot-map QA selects exactly mobile + desktop');
-pass('/test screen/smoke/full', `screen=${screenFiles.length}, smoke=${smokeFiles.length}, full capped=${fullFiles.length}`);
-pass('unsupported dashboard QA', 'dashboard targets skip with guidance until a Playwright screen is registered');
+pass('/run-agent sentinel', 'targeted brighton-spot-map and dashboard QA select exactly mobile + desktop');
+pass('/test screen/smoke/full', `screen=${screenFiles.length}, dashboard=${dashboardFiles.length}, smoke=${smokeFiles.length}, full capped=${fullFiles.length}`);
+pass('dashboard QA', 'dashboard-overview and dashboard-cameras are supported Sentinel targets');
 
 const uploadWarningPreservesStatus = 'QA result remains **PASS**.';
 assert(uploadWarningPreservesStatus.includes('PASS'), 'upload warning should not convert PASS to ERROR');

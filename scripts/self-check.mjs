@@ -201,9 +201,13 @@ for (const screen of [
   'brighton-parked',
   'osu-facility',
   'osu-spot-map',
+  'dashboard-overview',
+  'dashboard-cameras',
 ]) {
   assert(botSource.includes(`'${screen}'`), `QA screen missing ${screen}`);
 }
+assert(botSource.includes('QA_DASHBOARD_COMMAND'), 'dashboard QA command env support missing');
+assert(botSource.includes('qaDashboardCommand'), 'dashboard QA command routing missing');
 assert(botSource.includes('selectedSet'), 'QA screenshot de-duplication guard missing');
 assert(botSource.includes('QA result remains **${status}**'), 'QA upload warning should preserve PASS/FAIL status');
 assert(botSource.includes('qaUnsupportedTargets'), 'unsupported QA target registry missing');

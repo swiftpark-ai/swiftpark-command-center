@@ -89,7 +89,8 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '- Secrets, tokens, cookies, private keys, and `.env` values must not be printed.',
     '',
     '## Screenshots',
-    'Sentinel posts visual QA screenshots in #sentinel-qa. Screen mode posts only mobile + desktop for the selected screen. Smoke mode posts a small core set. Full mode posts all available screenshots, capped.',
+    'Sentinel posts visual QA screenshots in #sentinel-qa. Screen mode posts only mobile + desktop for the selected screen. Smoke mode posts a small core set. Full mode runs mobile-web and dashboard QA, then posts available screenshots capped.',
+    'Dashboard targets: `dashboard-overview`, `dashboard-cameras`.',
     'Sentinel resolves the QA package root before running. If no package with the required QA script exists, it skips with a clear setup message instead of raw npm noise.',
     'Example: `/test mode:screen screen:brighton-spot-map label:"Brighton map mobile check"`',
   ].join('\n');
