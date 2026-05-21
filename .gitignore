@@ -1,0 +1,6 @@
+.env
+node_modules/
+.pnpm-store/
+logs/
+dist/
+runs/
