@@ -2234,32 +2234,34 @@ function chunkMarkdownForDiscord(input: string, max = 1800): string[] {
 }
 
 async function postOrionConversation(channel: TextChannel | any, goal: GoalState, title: string, response: string): Promise<void> {
-  await channel.send({
-    content: `**${title}: goal-${goal.id}**`,
-    components: goalActionRows(goal),
-  });
+  await channel.send(`**${title}: goal-${goal.id}**`);
   for (const chunk of chunkMarkdownForDiscord(response)) {
     await channel.send(chunk);
   }
+  await postGoalControls(channel, goal);
 }
 
 async function replyToGoalThreadMessage(message: any, goal: GoalState, response: string): Promise<void> {
   const chunks = chunkMarkdownForDiscord(response);
   const first = chunks.shift() || '(no response)';
-  await message.reply({
-    content: first,
-    components: goalActionRows(goal),
-  }).catch(async () => {
-    await message.channel?.send(first).catch(() => undefined);
-  });
+  await message.channel?.send(first).catch(() => undefined);
 
   for (const chunk of chunks) {
     await message.channel?.send(chunk).catch(() => undefined);
   }
+  await postGoalControls(message.channel, goal).catch(() => undefined);
 }
 
 function orionResponsePath(goal: GoalState, jobId: string): string {
   return path.join(goal.runDir, `${jobId}-response.md`);
+}
+
+async function postGoalControls(channel: TextChannel | any, goal: GoalState, label = 'Goal controls'): Promise<void> {
+  if (!channel?.send) return;
+  await channel.send({
+    content: `**${label}: goal-${goal.id}**`,
+    components: goalActionRows(goal),
+  });
 }
 
 function goalActionRows(goal: GoalState): ActionRowBuilder<ButtonBuilder>[] {
@@ -2977,7 +2979,6 @@ async function postPlan(channel: TextChannel, goal: GoalState, plan: string): Pr
       `Approval: run \`/approve target:${goal.planApprovalToken}\``,
       `Saved plan: \`${relativeToCommandCenter(goal.paths.planMd)}\``,
     ].join('\n'),
-    components: goalActionRows(goal),
   });
 
   await channel.send(
@@ -2993,6 +2994,8 @@ async function postPlan(channel: TextChannel, goal: GoalState, plan: string): Pr
       ['GitHub tracking warning:', '```text', truncate(goal.githubWarning), '```'].join('\n')
     );
   }
+
+  await postGoalControls(channel, goal);
 }
 
 async function createGoalThread(channel: TextChannel, goal: GoalState): Promise<GoalState> {
@@ -3036,13 +3039,11 @@ async function postPlanToGoalThread(goal: GoalState, title: string, plan: string
     const thread = await client.channels.fetch(goal.threadId) as any;
     if (!thread?.send) return;
 
-    await thread.send({
-      content: `**${title}: goal-${goal.id}**`,
-      components: goalActionRows(goal),
-    });
+    await thread.send(`**${title}: goal-${goal.id}**`);
     for (const chunk of formatPlanForDiscord(plan, { mode: 'full' })) {
       await thread.send(chunk);
     }
+    await postGoalControls(thread, goal);
   } catch {
     // Thread posting is best-effort; slash commands remain authoritative.
   }

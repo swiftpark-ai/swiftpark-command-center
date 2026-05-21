@@ -173,6 +173,7 @@ assert(botSource.includes('answerGoalThreadQuestion'), 'goal thread question ans
 assert(botSource.includes('runOrionChat'), 'goal thread Codex chat reply path missing');
 assert(botSource.includes('hasSuccessfulImplementationJob'), 'agent approval guard missing');
 assert(botSource.includes('goalActionRows'), 'goal action buttons missing');
+assert(botSource.includes('postGoalControls'), 'final goal controls helper missing');
 assert(botSource.includes('goal:approve-run'), 'Approve + Run button missing');
 assert(botSource.includes('goal:ask-orion'), 'Ask Orion button missing');
 assert(botSource.includes('goal-modal:ask-orion'), 'Ask Orion modal missing');
