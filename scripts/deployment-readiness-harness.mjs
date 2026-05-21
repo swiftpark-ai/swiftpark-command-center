@@ -159,6 +159,12 @@ for (const snippet of ['SwiftPark Command Center Guide', 'Command Directory', 'E
 }
 pass('/help', 'guide sections present');
 
+const botSource = await readFile(path.join(root, 'src', 'bot.ts'), 'utf8');
+for (const snippet of ['goalActionRows', 'goal:approve-run', 'classifyGoalThreadMessage', 'answerGoalThreadQuestion']) {
+  assert(botSource.includes(snippet), `bot source missing ${snippet}`);
+}
+pass('goal thread actions', 'buttons and message classifier present');
+
 assert.deepEqual(agentDefinitions.map((agent) => agent.id), ['orion', 'iris', 'atlas', 'sentinel', 'scout', 'echo', 'pulse']);
 assert(agentDefinitions.find((agent) => agent.id === 'echo')?.defaultStatus === 'online');
 assert(agentDefinitions.find((agent) => agent.id === 'scout')?.defaultStatus === 'disabled');
@@ -220,10 +226,11 @@ pass('/revise-goal', 'revision saved and status returned to approval-needed');
 
 goalState.status = 'plan-approved';
 goalState.currentStep = 'Plan approved';
-goalState.nextAction = 'Plan-only mode: run /run-agent when ready.';
+goalState.mode = 'execute-after-approval';
+goalState.nextAction = 'Starting approved Iris/Atlas/Sentinel flow.';
 goalState.approvals = { plan: { approvedAt: new Date().toISOString(), approvedBy: 'local-harness' } };
 await writeFile(path.join(goalDir, 'status.json'), `${JSON.stringify(goalState, null, 2)}\n`);
-pass('/approve', 'plan approval recorded');
+pass('/approve', 'plan approval recorded; execute-after-approval path represented');
 
 for (const field of ['id', 'status', 'currentStep', 'currentAgent', 'elapsedMs', 'worktreePath', 'lastError', 'nextAction']) {
   assert(field in goalState, `/goal-status missing ${field}`);

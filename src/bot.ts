@@ -135,6 +135,8 @@ type GoalProgressReporter = (
   detail?: string
 ) => Promise<void>;
 
+type GoalThreadMessageIntent = 'ignore' | 'question' | 'approval-intent' | 'revision';
+
 type OrionPlanningResult = {
   plan: string;
   job: JobRecord;
@@ -901,8 +903,8 @@ async function registerCommands() {
           .setDescription('Dispatcher execution mode')
           .setRequired(false)
           .addChoices(
-            { name: 'plan-only', value: 'plan-only' },
-            { name: 'execute-after-approval', value: 'execute-after-approval' }
+            { name: 'execute-after-approval', value: 'execute-after-approval' },
+            { name: 'plan-only', value: 'plan-only' }
           )
       )
       .addStringOption((option) =>
@@ -1841,7 +1843,7 @@ function defaultNextAction(goal: GoalState): string {
   if (goal.status === 'waiting-for-plan-approval' || goal.status === 'plan-revised') {
     return `Approve with /approve target:${goal.planApprovalToken}`;
   }
-  if (goal.status === 'plan-approved') return 'Run /run-agent or wait for execute-after-approval flow.';
+  if (goal.status === 'plan-approved') return 'Use the goal action buttons, or wait for the execute-after-approval flow.';
   if (goal.status === 'ready-for-qa-approval') return `Approve QA with /approve target:${goal.qaApprovalToken}`;
   if (goal.status === 'planning') return 'Wait for Orion plan or timeout fallback.';
   if (goal.status === 'timed-out') return 'Review fallback plan or revise with /revise-goal.';
@@ -1986,7 +1988,10 @@ function chunkMarkdownForDiscord(input: string, max = 1800): string[] {
 }
 
 async function postOrionConversation(channel: TextChannel | any, goal: GoalState, title: string, response: string): Promise<void> {
-  await channel.send(`**${title}: goal-${goal.id}**`);
+  await channel.send({
+    content: `**${title}: goal-${goal.id}**`,
+    components: goalActionRows(goal),
+  });
   for (const chunk of chunkMarkdownForDiscord(response)) {
     await channel.send(chunk);
   }
@@ -1994,6 +1999,123 @@ async function postOrionConversation(channel: TextChannel | any, goal: GoalState
 
 function orionResponsePath(goal: GoalState, jobId: string): string {
   return path.join(goal.runDir, `${jobId}-response.md`);
+}
+
+function goalActionRows(goal: GoalState): ActionRowBuilder<ButtonBuilder>[] {
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`goal:approve-run:${goal.id}`)
+        .setLabel('Approve + Run')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`goal:approve-plan:${goal.id}`)
+        .setLabel('Plan Only')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`goal:plan-summary:${goal.id}`)
+        .setLabel('Summary')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`goal:plan-full:${goal.id}`)
+        .setLabel('Full Plan')
+        .setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`goal:run-iris:${goal.id}`)
+        .setLabel('Run Iris')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`goal:run-atlas:${goal.id}`)
+        .setLabel('Run Atlas')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`goal:run-sentinel:${goal.id}`)
+        .setLabel('Run Sentinel')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`goal:cancel:${goal.id}`)
+        .setLabel('Cancel')
+        .setStyle(ButtonStyle.Danger)
+    ),
+  ];
+}
+
+function classifyGoalThreadMessage(content: string): GoalThreadMessageIntent {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) return 'ignore';
+
+  if (/^(hi+|hello|hey|yo|thanks|thank you|ok|okay|cool|nice|lol|lmao|got it|sounds good)[.!? ]*$/i.test(normalized)) {
+    return 'ignore';
+  }
+
+  if (/\b(idiot|stupid|dumb)\b/i.test(normalized) && normalized.split(/\s+/).length <= 6) {
+    return 'ignore';
+  }
+
+  if (/[?]$/.test(normalized) || /^(what|where|which|who|why|how|can|could|should|would|does|do|did|is|are|am|will)\b/i.test(normalized)) {
+    return 'question';
+  }
+
+  if (/\b(approve|approved|approval|proceed|go ahead|looks good|lgtm|ship it|start|run it|continue|yes run|yes proceed)\b/i.test(normalized)) {
+    return 'approval-intent';
+  }
+
+  if (/\b(revise|change|update|make|focus|keep|remove|add|ignore|instead|only|don't|do not|dont|should|need|needs|scope|narrow|expand)\b/i.test(normalized)) {
+    return 'revision';
+  }
+
+  return normalized.length >= 24 ? 'question' : 'ignore';
+}
+
+async function answerGoalThreadQuestion(goal: GoalState, content: string): Promise<string> {
+  const lower = content.toLowerCase();
+  if (/\b(repo|repository|workspace|path|folder|directory|working in|worktree)\b/.test(lower)) {
+    return [
+      `For this goal, Orion is tracking goal-${goal.id}.`,
+      '',
+      `Configured product repo: \`${repoPath}\``,
+      `Command center repo: \`${commandCenterRoot}\``,
+      `Goal worktree: \`${goal.worktreePath}\``,
+      `Goal branch: \`${goal.branchName}\``,
+      '',
+      'If Phase 7 belongs somewhere else, revise the goal with the correct repo/path before running agents.',
+    ].join('\n');
+  }
+
+  if (/\b(status|state|where are we|next|what now|what's next|whats next)\b/.test(lower)) {
+    return formatGoalStatus(goal);
+  }
+
+  if (/\b(approve|approval|run|agent|iris|atlas|sentinel)\b/.test(lower)) {
+    const planApproved = goal.approvals.plan ? 'yes' : 'no';
+    return [
+      `Current goal: goal-${goal.id}`,
+      `Status: \`${goal.status}\``,
+      `Plan approved: ${planApproved}`,
+      '',
+      goal.approvals.plan
+        ? 'Use the buttons in this thread to run Iris, Atlas, or Sentinel. If the goal is `execute-after-approval`, approval starts the recommended flow.'
+        : 'Click **Approve + Run** to approve the plan and let Orion start the recommended flow, or **Plan Only** to approve without running agents.',
+    ].join('\n');
+  }
+
+  return [
+    `I'm tracking goal-${goal.id}: ${goal.description}`,
+    `Status: \`${goal.status}\``,
+    `Next: ${goal.nextAction || defaultNextAction(goal)}`,
+    '',
+    'Ask a direct question, or tell Orion what to change in the plan.',
+  ].join('\n');
+}
+
+function approvalIntentReply(goal: GoalState): string {
+  return [
+    `I read that as approval intent for goal-${goal.id}.`,
+    '',
+    'Use **Approve + Run** to let Orion start the recommended agents, or **Plan Only** if you only want to accept the plan without running agents.',
+  ].join('\n');
 }
 
 function upsertJob(goal: GoalState, job: JobRecord): void {
@@ -2444,8 +2566,8 @@ async function initializeGoal(
 }
 
 async function postPlan(channel: TextChannel, goal: GoalState, plan: string): Promise<void> {
-  await channel.send(
-    [
+  await channel.send({
+    content: [
       `**Orion Plan Ready: goal-${goal.id}**`,
       goal.issueUrl ? `GitHub issue: ${goal.issueUrl}` : 'GitHub issue: not available; local run record was created.',
       `Mode: \`${goal.mode}\``,
@@ -2455,8 +2577,9 @@ async function postPlan(channel: TextChannel, goal: GoalState, plan: string): Pr
       `Worktree: \`${goal.worktreePath}\``,
       `Approval: run \`/approve target:${goal.planApprovalToken}\``,
       `Saved plan: \`${relativeToCommandCenter(goal.paths.planMd)}\``,
-    ].join('\n')
-  );
+    ].join('\n'),
+    components: goalActionRows(goal),
+  });
 
   await channel.send(
     `Complete Orion plan below. If Discord splits it, read the messages in order; the saved copy is unchanged.`
@@ -2514,7 +2637,10 @@ async function postPlanToGoalThread(goal: GoalState, title: string, plan: string
     const thread = await client.channels.fetch(goal.threadId) as any;
     if (!thread?.send) return;
 
-    await thread.send(`**${title}: goal-${goal.id}**`);
+    await thread.send({
+      content: `**${title}: goal-${goal.id}**`,
+      components: goalActionRows(goal),
+    });
     for (const chunk of formatPlanForDiscord(plan, { mode: 'full' })) {
       await thread.send(chunk);
     }
@@ -3222,7 +3348,7 @@ async function runAgentJob(
       current.nextAction = job.status === 'succeeded'
         ? agent === 'sentinel'
           ? defaultNextAction(current)
-          : `Review ${agent} output, then approve with /approve target:${current.agentApprovalToken} or run Sentinel with /run-agent.`
+          : `Review ${agent} output, then approve with /approve target:${current.agentApprovalToken} or use the Sentinel button.`
         : `Review ${agent} output in ${relativeToCommandCenter(job.outputPath || goal.runDir)}; revise or rerun after fixing the blocker.`;
       upsertJob(current, job);
     });
@@ -3241,8 +3367,8 @@ async function runAgentJob(
           ? channels['yc-reddit']
           : channels['pm-planning'];
 
-  await targetChannel.send(
-    [
+  await targetChannel.send({
+    content: [
       `# ${agent} ${job.status === 'succeeded' ? 'Complete' : 'Failed'}`,
       `Goal: \`goal-${goal.id}\``,
       `Branch: \`${goal.branchName}\``,
@@ -3254,8 +3380,9 @@ async function runAgentJob(
       '```text',
       truncate(job.summary || '(no summary)', 1300),
       '```',
-    ].join('\n')
-  ).catch(() => {});
+    ].join('\n'),
+    components: goalActionRows(goal),
+  }).catch(() => {});
 
   if (agent !== 'sentinel' && maxAgentLogChunks > 0 && !result.ok) {
     await postTerminalOutput(targetChannel, 'Captured output', result.output, maxAgentLogChunks).catch(() => {});
@@ -3682,6 +3809,119 @@ function stopTrackedGoalProcesses(goalId: string): string[] {
   return stopped;
 }
 
+async function approvePlanGoal(
+  goal: GoalState,
+  channels: Record<string, TextChannel>,
+  approvedBy: string,
+  options: { runRecommended?: boolean; forceMode?: GoalMode } = {}
+): Promise<{ updated: GoalState; started: boolean; alreadyApproved: boolean; blockedReason?: string }> {
+  const alreadyApproved = Boolean(goal.approvals.plan);
+  const runRecommended = options.runRecommended ?? goal.mode === 'execute-after-approval';
+  const updated = await updateGoalState(goal.id, (current) => {
+    if (options.forceMode) current.mode = options.forceMode;
+    if (runRecommended) current.mode = 'execute-after-approval';
+    current.status = 'plan-approved';
+    current.currentStep = 'Plan approved';
+    current.currentAgent = undefined;
+    current.lastError = undefined;
+    current.nextAction = runRecommended
+      ? 'Starting approved Iris/Atlas/Sentinel flow.'
+      : 'Plan-only mode: use the action buttons or /run-agent when ready.';
+    current.approvals.plan ||= {
+      approvedAt: new Date().toISOString(),
+      approvedBy,
+    };
+  });
+
+  await setAgentFinished('orion', true, `Plan approved for goal-${updated.id}.`).catch(() => undefined);
+  await channels['approvals'].send(
+    `Approved Orion plan **${updated.planApprovalToken}** for goal-${updated.id} by <@${approvedBy}>. ${runRecommended ? 'Recommended execution is starting.' : 'Plan-only approval recorded.'}`
+  ).catch(() => undefined);
+  await channels['pm-planning'].send(
+    `Plan approved for goal-${updated.id}. ${runRecommended ? 'Starting approved Iris/Atlas/Sentinel flow.' : 'Plan-only mode: waiting for an explicit agent run.'}`
+  ).catch(() => undefined);
+  await postToGoalThread(
+    updated,
+    `Plan approved by <@${approvedBy}>. ${runRecommended ? 'Starting recommended agent flow.' : 'Plan-only approval recorded.'}`
+  );
+  await postAgentStatusBoard(channels).catch(() => undefined);
+  await notifySubscribers(
+    channels,
+    `Plan approved for goal-${updated.id}. ${runRecommended ? 'Execution is starting.' : 'Plan-only approval recorded.'}`
+  ).catch(() => undefined);
+
+  if (!runRecommended) {
+    return { updated, started: false, alreadyApproved };
+  }
+
+  const runningJob = updated.jobs.find((job) => job.status === 'running');
+  if (runningJob) {
+    return {
+      updated,
+      started: false,
+      alreadyApproved,
+      blockedReason: `${runningJob.agent} is already running for this goal.`,
+    };
+  }
+
+  void startApprovedExecution(updated.id, channels, approvedBy).catch(async (err: any) => {
+    const errorOutput = err?.stack || err?.message || String(err);
+    await postCommandCenterError(channels, `Execution crashed for goal-${updated.id}`, errorOutput, updated.id).catch(() => undefined);
+    await channels['agent-status'].send(
+      [`Execution crashed for goal-${updated.id}.`, '```text', truncate(errorOutput), '```'].join('\n')
+    ).catch(() => {});
+  });
+
+  return { updated, started: true, alreadyApproved };
+}
+
+async function cancelGoalRun(
+  goal: GoalState,
+  reason: string,
+  channels: Record<string, TextChannel>
+): Promise<{ updated: GoalState; stopped: string[] }> {
+  const stopped = stopTrackedGoalProcesses(goal.id);
+  const updated = await updateGoalState(goal.id, (current) => {
+    current.status = 'canceled';
+    current.endedAt = new Date().toISOString();
+    current.currentStep = 'Canceled';
+    current.lastError = reason;
+    current.nextAction = 'Rerun /goal if this work is still needed.';
+    for (const job of current.jobs) {
+      if (job.status === 'running') {
+        job.status = 'canceled';
+        job.endedAt = new Date().toISOString();
+        job.error = reason;
+      }
+    }
+  });
+
+  if (updated.currentAgent) {
+    await updateAgent(updated.currentAgent, {
+      status: updated.currentAgent === 'echo' ? 'online' : 'idle',
+      currentTask: '',
+      currentStep: undefined,
+      currentGoalId: undefined,
+      currentWorktree: undefined,
+      currentBranch: undefined,
+      startedAt: undefined,
+      lastOutputSummary: `Canceled goal-${updated.id}: ${reason}`,
+    }).catch(() => undefined);
+  }
+
+  await channels['logs'].send(
+    [
+      `Goal canceled: \`goal-${updated.id}\``,
+      `Reason: ${redactSensitive(reason)}`,
+      `Tracked subprocesses stopped: ${stopped.length ? stopped.join(', ') : 'none'}`,
+    ].join('\n')
+  ).catch(() => undefined);
+  await channels['build-feed'].send(`goal-${updated.id} canceled. Tracked subprocesses stopped: ${stopped.length}.`).catch(() => undefined);
+  await postAgentStatusBoard(channels).catch(() => undefined);
+
+  return { updated, stopped };
+}
+
 function formatSetupSummary(result: ChannelSetupResult): string {
   return [
     '## Echo finished command-center setup.',
@@ -3927,8 +4167,24 @@ client.on('messageCreate', async (message: any) => {
     return;
   }
 
+  const intent = classifyGoalThreadMessage(content);
+  if (intent === 'ignore') return;
+
   try {
     const setup = await ensureChannels(message.guild);
+    if (intent === 'question') {
+      await message.reply(await answerGoalThreadQuestion(goal, content)).catch(() => undefined);
+      return;
+    }
+
+    if (intent === 'approval-intent') {
+      await message.reply({
+        content: approvalIntentReply(goal),
+        components: goalActionRows(goal),
+      }).catch(() => undefined);
+      return;
+    }
+
     await message.channel?.sendTyping?.().catch(() => undefined);
     await message.reply(`Orion is revising goal-${goal.id} from this thread message.`).catch(() => undefined);
     const { goal: revisedGoal } = await reviseGoalPlan(
@@ -3955,15 +4211,20 @@ client.on('messageCreate', async (message: any) => {
 });
 
 async function handleButtonInteraction(interaction: any): Promise<void> {
-  if (!interaction.customId?.startsWith('pulse:gym:')) return;
-
   if (!allowedUsers.has(interaction.user.id)) {
     await safeInitialReply(interaction, {
-      content: 'You are not authorized to use Pulse check-ins.',
+      content: 'You are not authorized to use SwiftPark command-center buttons.',
       ephemeral: true,
     });
     return;
   }
+
+  if (interaction.customId?.startsWith('goal:')) {
+    await handleGoalButtonInteraction(interaction);
+    return;
+  }
+
+  if (!interaction.customId?.startsWith('pulse:gym:')) return;
 
   const [, , rawStatus, rawDate] = String(interaction.customId).split(':');
   const status = rawStatus === 'yes' ? 'yes' : 'not-yet';
@@ -3974,6 +4235,103 @@ async function handleButtonInteraction(interaction: any): Promise<void> {
     content: message,
     ephemeral: true,
   });
+}
+
+async function handleGoalButtonInteraction(interaction: any): Promise<void> {
+  const guild = interaction.guild;
+  if (!guild) {
+    await safeInitialReply(interaction, {
+      content: 'Goal buttons must be used in the SwiftPark Discord server.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const [, action, rawGoalId] = String(interaction.customId).split(':');
+  const goal = rawGoalId ? await readGoalState(rawGoalId) : undefined;
+  if (!goal) {
+    await safeInitialReply(interaction, {
+      content: `Unknown goal for this button: \`${rawGoalId || '(missing)'}\`.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const setup = await ensureChannels(guild);
+
+  if (action === 'plan-summary' || action === 'plan-full') {
+    const format = action === 'plan-full' ? 'full' : 'summary';
+    const plan = await readPlan(goal);
+    const chunks = formatPlanForDiscord(plan, {
+      mode: format,
+      maxLinesPerSection: format === 'summary' ? 4 : undefined,
+    });
+    await replyWithChunks(
+      interaction,
+      [
+        `## Orion Plan: goal-${goal.id}`,
+        `Format: \`${format}\``,
+        `Saved plan: \`${relativeToCommandCenter(goal.paths.planMd)}\``,
+      ].join('\n'),
+      chunks
+    );
+    return;
+  }
+
+  if (action === 'approve-run' || action === 'approve-plan') {
+    const runRecommended = action === 'approve-run';
+    const result = await approvePlanGoal(goal, setup.channels, interaction.user.id, {
+      runRecommended,
+      forceMode: runRecommended ? 'execute-after-approval' : 'plan-only',
+    });
+    await interaction.editReply(
+      [
+        result.alreadyApproved ? `Plan was already approved for goal-${result.updated.id}.` : `Approval recorded for goal-${result.updated.id}.`,
+        result.started ? 'Orion is starting the recommended agent flow.' : result.blockedReason || 'Plan-only approval recorded.',
+      ].join('\n')
+    );
+    return;
+  }
+
+  if (action === 'cancel') {
+    const { updated, stopped } = await cancelGoalRun(goal, 'Canceled from goal action button.', setup.channels);
+    await interaction.editReply(
+      [
+        `Canceled goal-${updated.id}.`,
+        stopped.length ? `Stopped tracked subprocesses: ${stopped.join(', ')}` : 'No tracked live subprocess was found.',
+      ].join('\n')
+    );
+    return;
+  }
+
+  const runAgent = action === 'run-iris'
+    ? 'iris'
+    : action === 'run-atlas'
+      ? 'atlas'
+      : action === 'run-sentinel'
+        ? 'sentinel'
+        : undefined;
+
+  if (runAgent) {
+    if (!goal.approvals.plan) {
+      await interaction.editReply(`Plan not approved yet. Click **Approve + Run** or use \`/approve target:${goal.planApprovalToken}\` first.`);
+      return;
+    }
+
+    await interaction.editReply(`Started ${runAgent} for goal-${goal.id}. Updates will post to #echo-status.`);
+    void runAgentJob(goal.id, runAgent, defaultAgentTask(goal, runAgent), setup.channels, interaction.user.id).catch(async (err: any) => {
+      const errorOutput = err?.stack || err?.message || String(err);
+      await setAgentFinished(runAgent, false, errorOutput).catch(() => undefined);
+      await postCommandCenterError(setup.channels, `${runAgent} crashed for goal-${goal.id}`, errorOutput, goal.id).catch(() => undefined);
+      await setup.channels['agent-status'].send(
+        [`${runAgent} crashed for goal-${goal.id}.`, '```text', truncate(errorOutput), '```'].join('\n')
+      ).catch(() => {});
+    });
+    return;
+  }
+
+  await interaction.editReply(`Unknown goal action: \`${action}\`.`);
 }
 
 async function handleChatInputCommand(interaction: any): Promise<void> {
@@ -4361,44 +4719,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       return;
     }
 
-    const stopped = stopTrackedGoalProcesses(goal.id);
-    const updated = await updateGoalState(goal.id, (current) => {
-      current.status = 'canceled';
-      current.endedAt = new Date().toISOString();
-      current.currentStep = 'Canceled';
-      current.lastError = reason;
-      current.nextAction = 'Rerun /goal if this work is still needed.';
-      for (const job of current.jobs) {
-        if (job.status === 'running') {
-          job.status = 'canceled';
-          job.endedAt = new Date().toISOString();
-          job.error = reason;
-        }
-      }
-    });
-
-    if (updated.currentAgent) {
-      await updateAgent(updated.currentAgent, {
-        status: updated.currentAgent === 'echo' ? 'online' : 'idle',
-        currentTask: '',
-        currentStep: undefined,
-        currentGoalId: undefined,
-        currentWorktree: undefined,
-        currentBranch: undefined,
-        startedAt: undefined,
-        lastOutputSummary: `Canceled goal-${updated.id}: ${reason}`,
-      }).catch(() => undefined);
-    }
-
-    await channels['logs'].send(
-      [
-        `Goal canceled: \`goal-${updated.id}\``,
-        `Reason: ${redactSensitive(reason)}`,
-        `Tracked subprocesses stopped: ${stopped.length ? stopped.join(', ') : 'none'}`,
-      ].join('\n')
-    ).catch(() => undefined);
-    await buildFeed.send(`goal-${updated.id} canceled. Tracked subprocesses stopped: ${stopped.length}.`).catch(() => undefined);
-    await postAgentStatusBoard(channels).catch(() => undefined);
+    const { updated, stopped } = await cancelGoalRun(goal, reason, channels);
     await interaction.editReply(
       [
         `Canceled goal-${updated.id}.`,
@@ -4461,7 +4782,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     const requestedMode = interaction.options.getString('mode');
     const requestedAgents = interaction.options.getString('agents');
     const primaryScreen = interaction.options.getString('primary_screen') || undefined;
-    const mode = isGoalMode(requestedMode) ? requestedMode : 'plan-only';
+    const mode = isGoalMode(requestedMode) ? requestedMode : 'execute-after-approval';
     const agents = isGoalAgentChoice(requestedAgents) ? requestedAgents : 'auto';
     let progressMessage: any;
     let activeGoalId: string | undefined;
@@ -4638,48 +4959,13 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
         return;
       }
 
-      if (goal.approvals.plan) {
-        await interaction.editReply(`Plan **${goal.planApprovalToken}** was already approved.`);
-        return;
-      }
-
-      const updated = await updateGoalState(goal.id, (current) => {
-        current.status = 'plan-approved';
-        current.currentStep = 'Plan approved';
-        current.currentAgent = undefined;
-        current.lastError = undefined;
-        current.nextAction = current.mode === 'execute-after-approval'
-          ? 'Starting approved Iris/Atlas/Sentinel flow.'
-          : 'Plan-only mode: run /run-agent when ready.';
-        current.approvals.plan = {
-          approvedAt: new Date().toISOString(),
-          approvedBy: interaction.user.id,
-        };
-      });
-
-      await setAgentFinished('orion', true, `Plan approved for goal-${updated.id}.`).catch(() => undefined);
-
-      await approvals.send(`Approved Orion plan **${updated.planApprovalToken}** for goal-${updated.id} by <@${interaction.user.id}>.`);
-      await pmPlanning.send(
-        `Plan approved for goal-${updated.id}. ${updated.mode === 'execute-after-approval' ? 'Starting approved Iris/Atlas/Sentinel flow.' : 'Plan-only mode: waiting for /run-agent.'}`
+      const result = await approvePlanGoal(goal, channels, interaction.user.id);
+      await interaction.editReply(
+        [
+          result.alreadyApproved ? `Plan **${result.updated.planApprovalToken}** was already approved.` : `Approval recorded for **${result.updated.planApprovalToken}**.`,
+          result.started ? 'Orion is starting the recommended agent flow.' : result.blockedReason || 'Plan-only approval recorded.',
+        ].join('\n')
       );
-      await postToGoalThread(updated, `Plan approved by <@${interaction.user.id}>. ${updated.mode === 'execute-after-approval' ? 'Starting approved agent flow.' : 'Waiting for /run-agent.'}`);
-      await postAgentStatusBoard(channels).catch(() => undefined);
-      await notifySubscribers(
-        channels,
-        `Plan approved for goal-${updated.id}. ${updated.mode === 'execute-after-approval' ? 'Execution is starting.' : 'Waiting for /run-agent.'}`
-      ).catch(() => undefined);
-      await interaction.editReply(`Approval recorded for **${updated.planApprovalToken}**.`);
-
-      if (updated.mode === 'execute-after-approval') {
-        void startApprovedExecution(updated.id, channels, interaction.user.id).catch(async (err: any) => {
-          const errorOutput = err?.stack || err?.message || String(err);
-          await postCommandCenterError(channels, `Execution crashed for goal-${updated.id}`, errorOutput, updated.id).catch(() => undefined);
-          await agentStatus.send(
-            [`Execution crashed for goal-${updated.id}.`, '```text', truncate(errorOutput), '```'].join('\n')
-          ).catch(() => {});
-        });
-      }
 
       return;
     }

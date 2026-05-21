@@ -75,10 +75,12 @@ Create a goal:
 
 Defaults:
 
-- `mode`: `plan-only`
+- `mode`: `execute-after-approval`
 - `agents`: `auto`
 
 `/goal` creates `runs/goal-<id>/`, saves `goal.json`, `plan.md`, and `status.json`, writes a local GitHub issue body file for audit, creates a local worktree for agent isolation, asks Orion to plan, posts the complete plan to `#orion-planning` in multiple messages when needed, posts a summary to `#echo-build-feed`, and waits. Raw Codex CLI output is kept in the local job log; Discord and `plan.md` use only the extracted final Orion plan.
+
+When `mode` is omitted, new goals default to `execute-after-approval`: approving the plan starts Orion's recommended Iris/Atlas flow and then Sentinel. Use `mode:plan-only` or the **Plan Only** button when you want to approve planning without running agents.
 
 GitHub issue creation/editing is disabled unless `GITHUB_ISSUES_ENABLED=true` or `COMMAND_CENTER_GITHUB_ISSUES_ENABLED=true` is set. When disabled, the bot keeps the local `github-issue-body.md` file only.
 
@@ -112,9 +114,9 @@ Approve the plan:
 /approve target:plan-<goal_id>
 ```
 
-Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target.
+Inside a goal thread, `/approve` can infer the current goal and choose the next relevant approval target. Orion plan posts also include buttons: **Approve + Run**, **Plan Only**, **Summary**, **Full Plan**, **Run Iris**, **Run Atlas**, **Run Sentinel**, and **Cancel**.
 
-In `plan-only` mode, approval is recorded and the goal waits for `/run-agent`. In `execute-after-approval` mode, Iris and/or Atlas run based on the selected assignment, then Sentinel runs visual QA.
+In `plan-only` mode, approval is recorded and the goal waits for an explicit agent button or `/run-agent`. In `execute-after-approval` mode, Iris and/or Atlas run based on the selected assignment, then Sentinel runs visual QA.
 
 ## Run Agents
 
@@ -179,7 +181,7 @@ Ask Orion to revise a goal plan:
 /revise-goal feedback:<text> target:<general|plan|iris|atlas|sentinel> goal_id:<optional>
 ```
 
-Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are treated as Orion revision feedback. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
+Revisions are conversational in Discord and saved as full Orion responses in the goal run folder. The saved `plan.md` remains the execution handoff for Iris, Atlas, and Sentinel. If `ORION_THREAD_REPLIES_ENABLED=true` and Discord's Message Content intent is enabled for the bot application, normal messages from allowed users inside a recognized goal thread are classified before action: simple greetings/low-signal messages are ignored, questions get direct answers, approval-like messages show action buttons, and clear change requests revise the plan. This is opt-in because enabling Message Content without the matching Discord developer-portal setting can prevent the bot from logging in.
 
 ## Notifications
 
