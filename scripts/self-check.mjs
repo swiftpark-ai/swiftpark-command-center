@@ -18,6 +18,28 @@ const helpChannel = requiredChannelDefinitions.find((channel) => channel.id === 
 assert.equal(helpChannel?.displayName, 'helppppppppppppppppppppppppppppppppppppp', 'joke help channel name should remain canonical');
 assert(helpChannel.aliases.includes('help'), 'plain help channel name should remain an alias');
 
+const expectedRequiredChannels = [
+  'echo-command',
+  'helppppppppppppppppppppppppppppppppppppp',
+  'orion-planning',
+  'echo-status',
+  'echo-build-feed',
+  'sentinel-qa',
+  'echo-approvals',
+  'iris-frontend',
+  'atlas-backend',
+  'scout-research',
+  'scout-outreach',
+  'pulse-checkins',
+  'echo-manual-log',
+  'echo-logs',
+];
+assert.deepEqual(
+  requiredChannelDefinitions.map((channel) => channel.displayName),
+  expectedRequiredChannels,
+  'required channel display names changed unexpectedly'
+);
+
 const helpSource = await readFile(path.join(root, 'src', 'help.ts'), 'utf8');
 for (const command of [
   '/goal',

@@ -1114,7 +1114,7 @@ async function ensureChannels(guild: any): Promise<ChannelSetupResult> {
       });
       created.push(definition.displayName);
     } else if (channel) {
-      if ((definition.id === 'pm-planning' || definition.id === 'help') && channel.name !== definition.displayName) {
+      if (definition.required && channel.name !== definition.displayName) {
         const canonicalExists = guild.channels.cache.find(
           (candidate: any) =>
             candidate.type === ChannelType.GuildText
@@ -2698,7 +2698,7 @@ async function runAgentJob(
       }).catch(() => undefined);
       await postCommandCenterError(channels, `${agent} could not start`, errorOutput, goal.id).catch(() => undefined);
       await channels['agent-status'].send(
-        `${agent} could not start for goal-${goal.id}: worktree unavailable. Check #logs.`
+        `${agent} could not start for goal-${goal.id}: worktree unavailable. Check #echo-logs.`
       ).catch(() => undefined);
       return false;
     }
@@ -2884,7 +2884,7 @@ async function runAgentJob(
     channels,
     job.status === 'succeeded'
       ? `${agent} finished for goal-${goal.id}. Summary: ${truncate(job.summary || '(no summary)', 700)}`
-      : `${agent} failed for goal-${goal.id}. Check #agent-status and the agent output channel.`
+      : `${agent} failed for goal-${goal.id}. Check #echo-status and the agent output channel.`
   ).catch(() => undefined);
 
   return job.status === 'succeeded';
@@ -2928,7 +2928,7 @@ async function startApprovedExecution(
     current.currentAgent = 'sentinel';
     current.nextAction = qaOk
       ? `Review screenshots, then approve QA with /approve target:${current.qaApprovalToken}.`
-      : 'Review #qa-visual and rerun Sentinel after fixing the blocker.';
+      : 'Review #sentinel-qa and rerun Sentinel after fixing the blocker.';
   });
 
   await channels['agent-status'].send(
@@ -2940,7 +2940,7 @@ async function startApprovedExecution(
     channels,
     qaOk
       ? `Sentinel QA finished for goal-${goal.id}. Approval needed: /approve target:${goal.qaApprovalToken}`
-      : `Sentinel QA failed for goal-${goal.id}. Check #qa-visual.`
+      : `Sentinel QA failed for goal-${goal.id}. Check #sentinel-qa.`
   ).catch(() => undefined);
 }
 
@@ -3164,7 +3164,7 @@ async function postCommandCenterError(
     '```',
   ].filter(Boolean).join('\n')).catch(() => undefined);
 
-  await channels['build-feed']?.send(`${prefix}${title}. See #logs for details.`).catch(() => undefined);
+  await channels['build-feed']?.send(`${prefix}${title}. See #echo-logs for details.`).catch(() => undefined);
 }
 
 function sanitizeRemoteUrl(url: string): string {
@@ -3401,7 +3401,7 @@ client.once('clientReady', async () => {
 
 async function handleInteractionError(interaction: any, err: any): Promise<void> {
   const errorOutput = err?.stack || err?.message || String(err);
-  const friendly = 'Command failed safely. Check #logs for details, then retry or adjust the command.';
+  const friendly = 'Command failed safely. Check #echo-logs for details, then retry or adjust the command.';
 
   if (isInteractionAckFailure(err)) {
     console.warn(
@@ -3505,7 +3505,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     if (
       !(await safeInitialReply(
         interaction,
-        `Sentinel QA started: **${label}**. Mode: \`${mode}\`. Updates will be posted in #qa-visual.`
+        `Sentinel QA started: **${label}**. Mode: \`${mode}\`. Updates will be posted in #sentinel-qa.`
       ))
     ) {
       return;
@@ -3538,13 +3538,13 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
         await postTerminalOutput(qaVisual, 'Command-center error', errorOutput);
       }
 
-      await interaction.editReply('Visual QA errored before completion. Check #qa-visual for any posted artifacts.');
+      await interaction.editReply('Visual QA errored before completion. Check #sentinel-qa for any posted artifacts.');
       return;
     }
 
     if (!qaVisual) {
-      await setAgentFinished('sentinel', false, '#qa-visual unavailable').catch(() => undefined);
-      await interaction.editReply('Visual QA errored before completion: #qa-visual was unavailable.');
+      await setAgentFinished('sentinel', false, '#sentinel-qa unavailable').catch(() => undefined);
+      await interaction.editReply('Visual QA errored before completion: #sentinel-qa was unavailable.');
       return;
     }
 
@@ -3555,7 +3555,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
     await setAgentFinished('sentinel', result.ok, result.output).catch(() => undefined);
     const status = result.ok ? 'PASS' : 'FAIL';
     const uploadSuffix = result.uploadSummary ? ` ${result.uploadSummary}.` : '';
-    await interaction.editReply(`Visual QA complete: **${status}**. Mode: \`${mode}\`. See #qa-visual.${uploadSuffix}`);
+    await interaction.editReply(`Visual QA complete: **${status}**. Mode: \`${mode}\`. See #sentinel-qa.${uploadSuffix}`);
     return;
   }
 
@@ -3832,7 +3832,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       await agentStatus.send(
         ['# Goal Revision Failed', '```text', truncate(errorOutput), '```'].join('\n')
       ).catch(() => {});
-      await interaction.editReply(`Goal revision failed. See #agent-status.`);
+      await interaction.editReply(`Goal revision failed. See #echo-status.`);
     }
 
     return;
@@ -3948,7 +3948,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
           current.endedAt = new Date().toISOString();
           current.currentStep = 'Goal creation failed';
           current.lastError = errorOutput;
-          current.nextAction = 'Check #logs, then rerun /goal or use /revise-goal if a plan exists.';
+          current.nextAction = 'Check #echo-logs, then rerun /goal or use /revise-goal if a plan exists.';
         }).catch(() => undefined);
       }
       await setAgentFinished('orion', false, errorOutput).catch(() => undefined);
@@ -3956,7 +3956,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       await agentStatus.send(
         ['# Goal Creation Failed', '```text', truncate(errorOutput), '```'].join('\n')
       ).catch(() => {});
-      await safeEditReply(interaction, `Goal creation failed. See #agent-status.`);
+      await safeEditReply(interaction, `Goal creation failed. See #echo-status.`);
     }
 
     return;
@@ -3990,7 +3990,7 @@ async function handleChatInputCommand(interaction: any): Promise<void> {
       return;
     }
 
-    await interaction.editReply(`Started ${requestedAgent} for goal-${goal.id}. Updates will post to #agent-status.`);
+    await interaction.editReply(`Started ${requestedAgent} for goal-${goal.id}. Updates will post to #echo-status.`);
     void runAgentJob(goal.id, requestedAgent, task, channels, interaction.user.id).catch(async (err: any) => {
       const errorOutput = err?.stack || err?.message || String(err);
       await setAgentFinished(requestedAgent, false, errorOutput).catch(() => undefined);

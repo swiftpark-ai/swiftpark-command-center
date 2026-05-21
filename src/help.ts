@@ -53,8 +53,8 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '- `/run-agent`: run Orion, Iris, Atlas, Sentinel, or Scout for an approved goal.',
     '- `/test`: run standalone Sentinel visual QA.',
     '- `/notify`: opt into or out of completion notifications.',
-    '- `/log-change`: record a Discord-first manual change note in #manual-log.',
-    '- `/decision`: record a Discord-first manual decision in #manual-log.',
+    '- `/log-change`: record a Discord-first manual change note in #echo-manual-log.',
+    '- `/decision`: record a Discord-first manual decision in #echo-manual-log.',
     '',
     '## Example Workflow',
     '1. `/goal description:"Improve Brighton spot map mobile clarity" mode:plan-only primary_screen:"brighton-spot-map" agents:iris`',
@@ -66,7 +66,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '7. `/approve target:plan-<id>`',
     '8. `/run-agent goal_id:<id> agent:iris`',
     '9. `/run-agent goal_id:<id> agent:sentinel task:"Run screen QA for brighton-spot-map"`',
-    '10. Review screenshots in #qa-visual.',
+    '10. Review screenshots in #sentinel-qa.',
     '11. `/approve target:qa-<id>` or `/reject target:qa-<id> reason:"..."`',
     '12. `/cancel goal_id:<id> reason:"No longer needed"` if the run should stop.',
     '13. `/decision summary:"Ship the phone-friendly planning flow for review" rationale:"Smoke checks passed; human Discord review remains." goal_id:<id>`',
@@ -80,7 +80,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     '- Secrets, tokens, cookies, private keys, and `.env` values must not be printed.',
     '',
     '## Screenshots',
-    'Sentinel posts visual QA screenshots in #qa-visual. Screen mode posts only mobile + desktop for the selected screen. Smoke mode posts a small core set. Full mode posts all available screenshots, capped.',
+    'Sentinel posts visual QA screenshots in #sentinel-qa. Screen mode posts only mobile + desktop for the selected screen. Smoke mode posts a small core set. Full mode posts all available screenshots, capped.',
     'Example: `/test mode:screen screen:brighton-spot-map label:"Brighton map mobile check"`',
     '',
     '## Revisions',
@@ -90,7 +90,7 @@ export function buildHelpGuideMessages(channels: ChannelDefinition[] = requiredC
     'Use `/notify setting:on` to receive completion and approval-needed pings. Use `/notify setting:off` to disable them. The bot never uses @everyone or @here.',
     '',
     '## Future Integrations',
-    'Use `/github-status` for read-only GitHub readiness. GitHub writes remain disabled unless separately configured and approved. Use `/jira-status` to check Jira env readiness; the bot does not contact Jira or require a Jira token. Use `/log-change` and `/decision` for Discord-first manual audit notes in #manual-log.',
+    'Use `/github-status` for read-only GitHub readiness. GitHub writes remain disabled unless separately configured and approved. Use `/jira-status` to check Jira env readiness; the bot does not contact Jira or require a Jira token. Use `/log-change` and `/decision` for Discord-first manual audit notes in #echo-manual-log.',
   ].join('\n');
 
   return [first, second];

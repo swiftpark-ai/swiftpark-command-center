@@ -138,11 +138,12 @@ const channelNames = new Set();
 function setup() {
   for (const channel of requiredChannelDefinitions) channelNames.add(channel.displayName);
   const helpName = requiredChannelDefinitions.find((channel) => channel.id === 'help')?.displayName;
+  const statusName = requiredChannelDefinitions.find((channel) => channel.id === 'agent-status')?.displayName;
   return {
     requiredCount: requiredChannelDefinitions.length,
     channelCount: channelNames.size,
     hasHelp: Boolean(helpName && channelNames.has(helpName)),
-    hasStatus: channelNames.has('agent-status'),
+    hasStatus: Boolean(statusName && channelNames.has(statusName)),
   };
 }
 

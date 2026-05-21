@@ -32,7 +32,7 @@ Discord command center bot for local SwiftPark agent workflows.
    /setup
    ```
 
-`/setup` creates missing command-center channels in the `Stress Less` category without duplicating existing channels, posts a created/existing summary, refreshes the help channel, and refreshes `#agent-status`. A successful setup message starts with `Echo finished command-center setup.`
+`/setup` creates missing command-center channels in the `Stress Less` category without duplicating existing channels, posts a created/existing summary, refreshes the help channel, and refreshes `#echo-status`. A successful setup message starts with `Echo finished command-center setup.`
 
 ## Agents
 
@@ -50,20 +50,20 @@ Neo is reserved for the future SwiftPark user-facing assistant. Do not use Neo a
 
 `/setup` manages these channels:
 
-- `agent-command`
+- `echo-command`
 - `helppppppppppppppppppppppppppppppppppppp`
 - `orion-planning`
-- `agent-status`
-- `build-feed`
-- `qa-visual`
-- `approvals`
-- `frontend`
-- `backend`
-- `yc-reddit`
-- `client-outreach`
-- `personal-checkins`
-- `manual-log`
-- `logs`
+- `echo-status`
+- `echo-build-feed`
+- `sentinel-qa`
+- `echo-approvals`
+- `iris-frontend`
+- `atlas-backend`
+- `scout-research`
+- `scout-outreach`
+- `pulse-checkins`
+- `echo-manual-log`
+- `echo-logs`
 
 ## Goal Flow
 
@@ -78,7 +78,7 @@ Defaults:
 - `mode`: `plan-only`
 - `agents`: `auto`
 
-`/goal` creates `runs/goal-<id>/`, saves `goal.json`, `plan.md`, and `status.json`, writes a local GitHub issue body file for audit, creates a local worktree for agent isolation, asks Orion to plan, posts the complete plan to `#orion-planning` in multiple messages when needed, posts a summary to `#build-feed`, and waits. Raw Codex CLI output is kept in the local job log; Discord and `plan.md` use only the extracted final Orion plan.
+`/goal` creates `runs/goal-<id>/`, saves `goal.json`, `plan.md`, and `status.json`, writes a local GitHub issue body file for audit, creates a local worktree for agent isolation, asks Orion to plan, posts the complete plan to `#orion-planning` in multiple messages when needed, posts a summary to `#echo-build-feed`, and waits. Raw Codex CLI output is kept in the local job log; Discord and `plan.md` use only the extracted final Orion plan.
 
 GitHub issue creation/editing is disabled unless `GITHUB_ISSUES_ENABLED=true` or `COMMAND_CENTER_GITHUB_ISSUES_ENABLED=true` is set. When disabled, the bot keeps the local `github-issue-body.md` file only.
 
@@ -121,12 +121,12 @@ Run an agent manually:
 ```
 
 - `orion` revises or expands the plan.
-- `iris` runs `claude -p` in the goal worktree and posts to `#frontend`.
-- `atlas` runs `codex exec` in the goal worktree and posts to `#backend`.
-- `sentinel` runs visual QA and posts selected screenshots to `#qa-visual`.
+- `iris` runs `claude -p` in the goal worktree and posts to `#iris-frontend`.
+- `atlas` runs `codex exec` in the goal worktree and posts to `#atlas-backend`.
+- `sentinel` runs visual QA and posts selected screenshots to `#sentinel-qa`.
 - `scout` is stubbed; it does not browse, scrape, access accounts, edit YC, or send messages.
 
-Iris, Atlas, and Sentinel use their per-agent timeout settings, falling back to `AGENT_MAX_RUNTIME_MS`. `AGENT_MAX_RUNTIME_MS=0` lets long-running work continue while `#agent-status` heartbeats show elapsed time. `AGENT_STALE_AFTER_MS` only changes the visible status to long-running/stale; it does not kill the process.
+Iris, Atlas, and Sentinel use their per-agent timeout settings, falling back to `AGENT_MAX_RUNTIME_MS`. `AGENT_MAX_RUNTIME_MS=0` lets long-running work continue while `#echo-status` heartbeats show elapsed time. `AGENT_STALE_AFTER_MS` only changes the visible status to long-running/stale; it does not kill the process.
 
 Agent completion posts are phone-friendly:
 
@@ -217,7 +217,7 @@ Jira:
 
 Manual log:
 
-- `/log-change` and `/decision` append Discord-first audit notes to `runs/manual-log.md` and post to `#manual-log`.
+- `/log-change` and `/decision` append Discord-first audit notes to `runs/manual-log.md` and post to `#echo-manual-log`.
 - There is no external manual-log posting unless a future config-gated and approval-gated integration is added.
 
 ## QA Targeting
